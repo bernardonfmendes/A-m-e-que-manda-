@@ -2405,9 +2405,27 @@ function lerComIA(text){
   if (!SB || !SESSION) return Promise.reject(new Error('sem sessão'));
   var semNif = String(text).replace(/NIF[^\n]*/gi, 'NIF [removido]').replace(/\b\d{9}\b/g, '[removido]');
   return SB.functions.invoke('ler-fatura', {body: {texto: semNif}}).then(function(res){
-    if (res.error || !res.data || !Array.isArray(res.data.linhas) || !res.data.linhas.length) throw new Error('ia');
-    return res.data;
+    if (!res.error){
+      if (!res.data || !Array.isArray(res.data.linhas) || !res.data.linhas.length) throw new Error('A IA devolveu uma resposta vazia.');
+      return res.data;
+    }
+    var ctx = res.error.context;
+    return Promise.resolve(ctx && ctx.json ? ctx.json().catch(function(){ return {}; }) : {}).then(function(j){
+      var e = new Error(j.erro || res.error.message || 'erro');
+      e.status = ctx && ctx.status;
+      throw e;
+    });
   });
+}
+/* explica em português porque é que a IA não respondeu */
+function motivoIA(e){
+  if (!e) return 'erro desconhecido';
+  if (e.status === 404) return 'a função ler-fatura ainda não está publicada no Supabase';
+  if (e.status === 401) return 'a sessão expirou: sai da casa e volta a entrar';
+  if (e.status === 403) return 'a conta não está na lista da casa';
+  if (e.status === 500) return 'falta a chave GEMINI_API_KEY no Supabase';
+  if (e.status === 502) return 'o Gemini não respondeu: ' + e.message;
+  return e.message;
 }
 function readFatura(file){
   FAT = {step: 'review', busy: true, store: null, items: [], msg: '', check: null};
@@ -2418,14 +2436,14 @@ function readFatura(file){
     var r0 = parseInvoice(text);
     return lerComIA(text).then(function(ia){
       return {r: aplicaIA(r0, ia), origem: 'ia'};
-    }, function(){
-      return {r: r0, origem: 'basica'};
+    }, function(e){
+      return {r: r0, origem: 'basica', motivo: motivoIA(e)};
     });
   }).then(function(o){
     var r = o.r;
     var store = r.store || (S.store !== 'ref' ? S.store : null);
     var ref = r.regularTotal != null ? r.regularTotal : r.paidTotal;      /* o total que a fatura indica */
-    FAT = {step: 'review', busy: false, store: store, storeLido: r.store, check: r.check, origem: o.origem,
+    FAT = {step: 'review', busy: false, store: store, storeLido: r.store, check: r.check, origem: o.origem, motivo: o.motivo,
            total: ref, soma: r.regularTotal != null ? r.soma : r.somaPaga, somaPaga: r.somaPaga,
            msg: r.items.length ? '' : 'Não encontrei linhas de artigos nesta fatura.', items: r.items.map(function(it){
       var ing = matchInvoiceIngredient(it.nome, S);
@@ -2478,7 +2496,7 @@ function sheetFatura(){
        '<select id="fatStore" class="inp" data-fat="store">' + (FAT.store ? '' : '<option value="">Escolher…</option>') + stores + '</select></div>';
   h += '<p class="note"' + (FAT.check === false ? ' class="verdict bad" style="font-size:14px"' : '') + '>' + esc(faturaCheckMsg()) + '</p>';
   if (FAT.origem === 'ia') h += '<p class="note">Lido com a IA (Gemini). Confirma cada linha antes de guardar.</p>';
-  else if (FAT.origem === 'basica') h += '<p class="note">Leitura básica (a IA não respondeu). Confirma cada linha.</p>';
+  else if (FAT.origem === 'basica') h += '<p class="note">Leitura básica: a IA não respondeu (' + esc(FAT.motivo || 'sem detalhe') + '). Confirma cada linha.</p>';
   if (FAT.msg) h += '<p class="note">' + esc(FAT.msg) + '</p>';
   var marcados = FAT.items.filter(function(it){ return it.on; }).length;
   h += '<p class="note">' + FAT.items.length + ' linhas lidas · ' + marcados + ' marcadas para guardar. Os preços são os de tabela (sem descontos).</p>';
