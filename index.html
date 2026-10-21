@@ -346,6 +346,13 @@ a{color:var(--accent);text-underline-offset:3px}
   .x{min-width:44px}
   input, select, textarea{min-height:44px}
 }
+.sheet-panel,.sheet-b{min-width:0}
+.sheet-b select, .sheet-b .inp, .sheet-b .field{max-width:100%;min-width:0}
+.sheet-b select{width:100%}
+.vh > .row{flex-wrap:wrap;justify-content:flex-end}
+.fat-row{display:grid;gap:6px;padding:10px 0;border-top:1px solid var(--rule)}
+.fat-row label{display:flex;gap:8px;align-items:flex-start;font-weight:700;line-height:1.3}
+.fat-row label small{margin-left:auto;white-space:nowrap}
 /* sem sessão: só o ecrã de entrada */
 body.gated .tabs, body.gated .ctx, body.gated #sync{display:none}
 .gate{display:grid;gap:12px;margin-top:8px}

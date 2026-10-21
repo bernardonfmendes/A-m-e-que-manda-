@@ -1104,6 +1104,157 @@ function normalizeState(s){
   });
   return o;
 }
+
+/* ---------- faturas (PDF com texto): leitura das linhas ---------- */
+var INV_STORES = [
+  {re: /PINGO\s*DOCE/i, id: 'pingodoce'}, {re: /CONTINENTE/i, id: 'continente'}, {re: /AUCHAN/i, id: 'auchan'},
+  {re: /\bLIDL\b/i, id: 'lidl'}, {re: /MERCADONA/i, id: 'mercadona'}
+];
+function invoiceStore(text){
+  for (var i = 0; i < INV_STORES.length; i++) if (INV_STORES[i].re.test(text)) return INV_STORES[i].id;
+  return null;
+}
+function invNum(s){ return Number(String(s).replace(/\./g, '').replace(',', '.')); }
+
+/* lê as linhas de artigos de uma fatura (texto extraído do PDF).
+   Devolve: loja, artigos {nome, total (preço de tabela da linha), unit (preço unitário ou por kg), peso (true se vendido a peso), qtd, desconto}
+   e os totais que vêm na fatura, para verificar a leitura. */
+function parseInvoice(text){
+  var store = invoiceStore(text), lines = String(text || '').split(/\r?\n/).map(function(l){ return l.trim(); }).filter(Boolean);
+  var start = 0;
+  for (var k = 0; k < lines.length; k++){
+    if (/Artigos$|DESCRI[CÇ][AÃ]O\s+VALOR/i.test(lines[k])){ start = k + 1; break; }
+  }
+  var items = [], pending = null, last = null, ended = false, paidTotal = null, regularTotal = null;
+  var reQtyLine = /^(\d+)\s*X\s*(\d+,\d{2})\s+(\d+,\d{2})$/i;
+  for (var i = start; i < lines.length && !ended; i++){
+    var l = lines[i], m;
+    if ((m = /^TOTAL\s+A\s+PAGAR\s+(-?[\d.]+,\d{2})/i.exec(l))){ paidTotal = invNum(m[1]); ended = true; break; }
+    if ((m = /^TOTAL\s+(-?[\d.]+,\d{2})\s*$/i.exec(l))){ regularTotal = invNum(m[1]); ended = true; break; }
+    if (/^TOTAL/i.test(l)){ ended = true; break; }
+    if (/(POUPAN|DESCONTO)/i.test(l)){            /* descontos: já estão descontados no preço da linha */
+      var dv = /(-?\d+,\d{2})\)?\s*$/.exec(l);
+      if (last && dv) last.desconto += Math.abs(invNum(dv[1]));
+      continue;
+    }
+    if (/ACUMULA/i.test(l)) continue;             /* pontos de cartão: não são desconto no preço */
+    if (pending && (m = reQtyLine.exec(l))){
+      pending.qtd = Number(m[1]); pending.unit = invNum(m[2]); pending.total = invNum(m[3]);
+      items.push(pending); last = pending; pending = null; continue;
+    }
+    if ((m = /^([A-Z])\s+(.+?)\s+(\d+,\d{3})\s*X\s*(\d+,\d{2})\s+(\d+,\d{2})$/.exec(l))){      /* Pingo Doce, a peso */
+      last = {nome: m[2], total: invNum(m[5]), unit: invNum(m[4]), peso: true, qtd: invNum(m[3]), desconto: 0};
+      items.push(last); continue;
+    }
+    if ((m = /^([A-Z])\s+(.+?)\s+(\d+)\s*X\s*(\d+,\d{2})\s+(\d+,\d{2})$/.exec(l))){           /* Pingo Doce, unidades */
+      last = {nome: m[2], total: invNum(m[5]), unit: invNum(m[4]), peso: false, qtd: Number(m[3]), desconto: 0};
+      items.push(last); continue;
+    }
+    if ((m = /^(?:[A-Z]|\((?:A|B|C)\))\s+(.+?)\s+(-?\d+,\d{2})$/.exec(l))){                   /* linha com preço */
+      last = {nome: m[1], total: invNum(m[2]), unit: invNum(m[2]), peso: false, qtd: 1, desconto: 0};
+      items.push(last); continue;
+    }
+    if ((m = /^\((?:A|B|C)\)\s+(.+?)$/.exec(l))){                                             /* nome com quantidade na linha seguinte */
+      if (pending) items.push(pending);
+      pending = {nome: m[1], total: null, unit: null, peso: false, qtd: 1, desconto: 0};
+      continue;
+    }
+  }
+  if (pending) items.push(pending);
+  /* o Continente mostra o preço já descontado: o preço de tabela é a linha + descontos */
+  items.forEach(function(it){
+    it.nome = it.nome.replace(/\s+/g, ' ').trim();
+    if (store === 'continente' && it.total != null && it.desconto){
+      it.total = Math.round((it.total + it.desconto) * 100) / 100;
+      if (it.qtd > 1) it.unit = Math.round(it.total / it.qtd * 100) / 100;
+    }
+    it.pago = it.total == null ? null : Math.round((it.total - it.desconto) * 100) / 100;
+  });
+  var soma = items.reduce(function(a, it){ return a + (it.total || 0); }, 0);
+  var somaPaga = items.reduce(function(a, it){ return a + (it.pago || 0); }, 0);
+  var ref = regularTotal != null ? regularTotal : paidTotal;
+  var base = regularTotal != null ? soma : somaPaga;
+  var check = ref == null ? null : Math.abs(base - ref) < 0.02;
+  return {store: store, items: items, paidTotal: paidTotal, regularTotal: regularTotal,
+          soma: Math.round(soma * 100) / 100, somaPaga: Math.round(somaPaga * 100) / 100, check: check};
+}
+
+/* tamanho da embalagem indicado no nome do produto: "250G", "1KG", "500ML", "24U" → {qtd, un} em g, ml ou unidades */
+function invoiceSize(nome){
+  var re = /(\d+(?:[.,]\d+)?)\s*(KG|G|ML|CL|LT|L|UN|U)(?![A-Za-z])/gi, m, last = null;
+  while ((m = re.exec(nome))) last = m;
+  if (!last) return null;
+  var q = Number(last[1].replace(',', '.')), u = last[2].toUpperCase();
+  if (u === 'KG') return {qtd: q * 1000, un: 'g'};
+  if (u === 'G') return {qtd: q, un: 'g'};
+  if (u === 'L' || u === 'LT') return {qtd: q * 1000, un: 'ml'};
+  if (u === 'CL') return {qtd: q * 10, un: 'ml'};
+  if (u === 'ML') return {qtd: q, un: 'ml'};
+  return {qtd: q, un: 'un'};
+}
+
+/* preço da embalagem da app (ing.pack) a partir de uma linha da fatura. null = não dá para calcular sozinho */
+function packPriceFromInvoice(item, ing){
+  if (!item || item.unit == null || !ing) return null;
+  if (ing.u === 'un'){
+    if (item.peso) return null;
+    var su = invoiceSize(item.nome);
+    if (su && su.un === 'un') return round2(item.unit * ing.pack / su.qtd);
+    if (su) return null;
+    return round2(item.unit * ing.pack);           /* sem tamanho no nome: assume uma unidade por linha */
+  }
+  if (item.peso) return round2(item.unit * ing.pack / 1000);   /* preço por kg (ou por litro) */
+  var s = invoiceSize(item.nome);
+  if (!s || s.un !== ing.u) return null;
+  return round2(item.unit * ing.pack / s.qtd);
+}
+
+/* palavras genéricas que não bastam para associar um produto a um ingrediente (cor, tipo de carne, etc.) */
+var MATCH_GENERIC = ['verde','branco','branca','preto','preta','natural','fresco','fresca','carne','frango','porco','vaca','peixe','pao','massa','sumo','pure','misto','mini','grande','pequeno','classico','tradicional','extra','bio'];
+/* sugestão de ingrediente para uma linha da fatura: só se houver pelo menos uma palavra específica em comum */
+function matchInvoiceIngredient(nome, st){
+  var words = norm(nome).split(/[^a-z0-9]+/).filter(function(w){ return w.length >= 3; });
+  var best = null, bestN = 0;
+  allIngs(st).forEach(function(i){
+    var iw = norm(i.nome).split(/[^a-z0-9]+/).filter(function(w){ return w.length >= 3; });
+    var common = iw.filter(function(w){ return words.indexOf(w) >= 0 && MATCH_GENERIC.indexOf(w) < 0; });
+    if (common.length > bestN){ bestN = common.length; best = i; }
+  });
+  return bestN > 0 ? best : null;
+}
+
+/* texto de um PDF (pdf.js): as linhas são reconstruídas pela posição vertical do texto */
+function textItemsToLines(items){
+  var its = items.filter(function(i){ return i.str && i.str.trim(); }).map(function(i){
+    return {s: i.str, x: i.transform[4], y: i.transform[5], w: i.width || 0, h: Math.abs(i.height || i.transform[3] || 8)};
+  });
+  its.sort(function(a, b){ return (b.y - a.y) || (a.x - b.x); });
+  var lines = [], cur = null;
+  its.forEach(function(it){
+    if (!cur || Math.abs(it.y - cur.y) > it.h * 0.5){ cur = {y: it.y, items: []}; lines.push(cur); }
+    cur.items.push(it);
+  });
+  return lines.map(function(ln){
+    ln.items.sort(function(a, b){ return a.x - b.x; });
+    var out = '', prevEnd = null;
+    ln.items.forEach(function(it){
+      if (prevEnd !== null && it.x - prevEnd > it.h * 0.2) out += ' ';
+      out += it.s; prevEnd = it.x + it.w;
+    });
+    return out.replace(/\s+/g, ' ').trim();
+  }).join('\n');
+}
+function pdfToText(lib, data){
+  return lib.getDocument({data: data}).promise.then(function(doc){
+    var n = 0;
+    return Array.from({length: doc.numPages}, function(_, k){ return k + 1; }).reduce(function(acc, p){
+      return acc.then(function(out){
+        return doc.getPage(p).then(function(pg){ return pg.getTextContent(); })
+          .then(function(c){ return out + '\n' + textItemsToLines(c.items); });
+      });
+    }, Promise.resolve(''));
+  });
+}
 /* app.js — interface de A Mãe é que Sabe. Usa data.js e core.js. */
 (function(){
 'use strict';
@@ -1121,6 +1272,7 @@ var ZXING_URL = 'https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js';
 var TESS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js';
 var lastFocus = null, toastTimer = null;
 var SB = null, SESSION = null, LOGIN = {email: '', sent: false}, AUTH_READY = false;
+var FAT = null;     /* leitura de fatura em curso: {step, busy, store, items, msg, check, ...} */
 var REMOTE = {ready: false, busy: false, dirty: false, timer: null, pending: false, ch: null, base: 0, note: '', wantToast: false};
 
 function $(s, r){ return (r || document).querySelector(s); }
@@ -1734,7 +1886,7 @@ function viewPrecos(){
   if (S.store === 'ref') note = 'Média de referência: mediana de Continente, Pingo Doce e Auchan, recolhida a 17 de outubro de 2026. Os ingredientes marcados como estimativa ainda não têm preço recolhido.';
   else if (storeHasData(S.store, S) && Object.keys(BOOK[S.store] || {}).length) note = 'Preços de ' + st.curto + ' recolhidos a 17 de outubro de 2026 nos ingredientes com dados. Os restantes usam a média.';
   else note = 'Ainda não tenho preços recolhidos de ' + st.curto + ', por isso mostro a média de Continente, Pingo Doce e Auchan. Escreve os preços que vês na loja e passam a valer só para ' + st.curto + '.';
-  var h = '<div class="vh"><h1 class="h2">Preços</h1><div class="row"><button type="button" class="btn pri sm" data-act="scan-open">Ler etiqueta</button><button type="button" class="btn sm" data-act="new-ing">Novo ingrediente</button></div></div>';
+  var h = '<div class="vh"><h1 class="h2">Preços</h1><div class="row"><button type="button" class="btn pri sm" data-act="scan-open">Ler etiqueta</button><button type="button" class="btn sm" data-act="fat-open">Ler fatura</button><button type="button" class="btn sm" data-act="new-ing">Novo ingrediente</button></div></div>';
   h += '<div class="stack"><p class="note">Preço por embalagem em <strong>' + esc(st.curto) + '</strong>. ' + note +
        ' <a href="https://www.ativos.pt/cabaz-alimentar/produtos" target="_blank" rel="noopener noreferrer">Ver fonte</a>. Escreve um valor para o corrigires.</p>';
   h += '<input id="pSearch" class="inp" type="search" placeholder="Procurar ingrediente" aria-label="Procurar ingrediente" value="' + esc(UI.pq) + '">';
@@ -1800,7 +1952,7 @@ function openSheet(s){
   renderSheet(true);
 }
 function closeSheet(){
-  SH = null; ED = null; NI = null; SC = null;
+  SH = null; ED = null; NI = null; SC = null; FAT = null;
   $('#sheet').hidden = true;
   document.body.style.overflow = '';
   if (lastFocus && lastFocus.focus && document.contains(lastFocus)) lastFocus.focus();
@@ -2176,7 +2328,93 @@ function sheetLogin(){
   return {title: SESSION && !PASS_RECOVERY ? 'Casa e dados' : 'Partilhar com a casa', html: h};
 }
 
-var SHEETS = {picker: sheetPicker, recipe: sheetRecipe, editor: sheetEditor, newing: sheetNewIng, scan: sheetScan, login: sheetLogin};
+var SHEETS = {picker: sheetPicker, recipe: sheetRecipe, editor: sheetEditor, newing: sheetNewIng, scan: sheetScan, login: sheetLogin, fatura: sheetFatura};
+
+/* ---------- faturas ---------- */
+var PDFJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+var PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+function loadPdfJs(){
+  return new Promise(function(resolve, reject){
+    if (window.pdfjsLib){ resolve(window.pdfjsLib); return; }
+    var s = document.createElement('script');
+    s.src = PDFJS_URL;
+    s.onload = function(){ window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER; resolve(window.pdfjsLib); };
+    s.onerror = function(){ reject(new Error('pdfjs')); };
+    document.head.appendChild(s);
+  });
+}
+function readFatura(file){
+  FAT = {step: 'review', busy: true, store: null, items: [], msg: '', check: null};
+  renderSheet(false);
+  loadPdfJs().then(function(lib){
+    return file.arrayBuffer().then(function(buf){ return pdfToText(lib, new Uint8Array(buf)); });
+  }).then(function(text){
+    var r = parseInvoice(text);
+    var store = r.store || (S.store !== 'ref' ? S.store : null);
+    var ref = r.regularTotal != null ? r.regularTotal : r.paidTotal;      /* o total que a fatura indica */
+    FAT = {step: 'review', busy: false, store: store, storeLido: r.store, check: r.check,
+           total: ref, soma: r.regularTotal != null ? r.soma : r.somaPaga, somaPaga: r.somaPaga,
+           msg: r.items.length ? '' : 'Não encontrei linhas de artigos nesta fatura.', items: r.items.map(function(it){
+      var ing = matchInvoiceIngredient(it.nome, S);
+      var price = ing ? packPriceFromInvoice(it, ing) : null;
+      return {nome: it.nome, total: it.total, desconto: it.desconto, peso: it.peso, qtd: it.qtd, unit: it.unit,
+              ingId: ing ? ing.id : '', price: price, on: false};     /* nada fica marcado sem confirmação */
+    })};
+    renderSheet(false);
+  }).catch(function(){
+    FAT = {step: 'pick', busy: false, msg: 'Não consegui ler este PDF. Confirma que é a fatura em PDF (não uma foto) e tenta de novo.'};
+    renderSheet(false);
+  });
+}
+function faturaCheckMsg(){
+  if (FAT.check === true) return 'A soma das linhas (' + eur(FAT.soma) + ') bate certo com o total da fatura (' + eur(FAT.total) + ').';
+  if (FAT.check === false) return 'Atenção: a soma das linhas (' + eur(FAT.soma) + ') não bate com o total da fatura (' + eur(FAT.total) + '). Confirma as linhas antes de guardar.';
+  return 'Não encontrei o total da fatura para confirmar a leitura. Confirma as linhas antes de guardar.';
+}
+function sheetFatura(){
+  if (!FAT || FAT.step === 'pick'){
+    var p = '<p class="note">Escolhe o PDF da fatura do supermercado. A app lê o supermercado, os produtos e os preços. Antes de guardar, revês tudo.</p>' +
+      '<label class="btn pri block" style="cursor:pointer">Escolher PDF da fatura<input id="faturaFile" type="file" accept="application/pdf" hidden></label>';
+    if (FAT && FAT.msg) p += '<p class="note" role="status">' + esc(FAT.msg) + '</p>';
+    return {title: 'Ler fatura', html: p};
+  }
+  if (FAT.busy) return {title: 'Ler fatura', html: '<p class="note">A ler a fatura…</p>'};
+  var h = '';
+  var stores = STORES.filter(function(s){ return s.id !== 'ref'; }).map(function(s){
+    return '<option value="' + s.id + '"' + (s.id === FAT.store ? ' selected' : '') + '>' + esc(s.nome) + '</option>';
+  }).join('');
+  h += '<div class="field"><label class="lbl" for="fatStore">Supermercado' + (FAT.storeLido ? '' : ' (não reconhecido)') + '</label>' +
+       '<select id="fatStore" class="inp" data-fat="store">' + (FAT.store ? '' : '<option value="">Escolher…</option>') + stores + '</select></div>';
+  h += '<p class="note"' + (FAT.check === false ? ' class="verdict bad" style="font-size:14px"' : '') + '>' + esc(faturaCheckMsg()) + '</p>';
+  if (FAT.msg) h += '<p class="note">' + esc(FAT.msg) + '</p>';
+  var marcados = FAT.items.filter(function(it){ return it.on; }).length;
+  h += '<p class="note">' + FAT.items.length + ' linhas lidas · ' + marcados + ' marcadas para guardar. Os preços são os de tabela (sem descontos).</p>';
+  FAT.items.forEach(function(it, i){
+    h += '<div class="fat-row">' +
+      '<label><input type="checkbox" data-fat-on="' + i + '"' + (it.on ? ' checked' : '') + '> <span>' + esc(it.nome) + '</span> <small class="mono">' + eur(it.total) + '</small></label>' +
+      '<select class="inp" data-fat-ing="' + i + '" aria-label="Corresponde a ' + esc(it.nome) + '">' + ingOptions(it.ingId) + '</select>' +
+      '<input class="inp" type="number" step="0.01" min="0" inputmode="decimal" data-fat-price="' + i + '" value="' + (it.price == null ? '' : it.price.toFixed(2)) + '" placeholder="Preço da embalagem (€)" aria-label="Preço da embalagem de ' + esc(it.nome) + '">' +
+      (it.ingId && it.price == null ? '<p class="note">Não consegui calcular o preço da embalagem. Escreve-o.</p>' : '') +
+      '</div>';
+  });
+  h += '<button type="button" class="btn pri block" data-act="fat-save">Guardar preços marcados</button>';
+  return {title: 'Rever fatura', html: h};
+}
+function faturaSave(){
+  var store = FAT && FAT.store;
+  if (!store){ toast('Escolhe o supermercado.'); return; }
+  var semPreco = FAT.items.filter(function(it){ return it.on && it.ingId && !(it.price > 0); });
+  if (semPreco.length){ toast('Falta o preço da embalagem de ' + semPreco[0].nome + '.'); return; }
+  var n = 0;
+  if (!S.prices[store]) S.prices[store] = {};
+  FAT.items.forEach(function(it){
+    if (!it.on || !it.ingId || !(it.price > 0)) return;
+    S.prices[store][it.ingId] = round2(it.price); n++;
+  });
+  if (!n){ toast('Não há linhas marcadas para guardar.'); return; }
+  persist(); closeSheet(); render();
+  toast(n + (n === 1 ? ' preço guardado' : ' preços guardados') + ' para ' + storeObj(store).nome + '.');
+}
 
 /* ---------- ações ---------- */
 function setPeople(n){
@@ -2277,6 +2515,8 @@ var ACTS = {
   'scan-save': saveScan,
   'login-open': function(){ LOGIN.msg = ''; openSheet({type: 'login'}); },
   'casa-guardar': function(){ pushSafe(); },
+  'fat-open': function(){ FAT = {step: 'pick', busy: false, msg: ''}; openSheet({type: 'fatura'}); },
+  'fat-save': function(){ faturaSave(); },
   'price-save': function(el){ var inp = el.closest('.prow').querySelector('.pinput'); setPrice(inp); toast('Preço guardado.'); },
   'casa-atualizar': function(){ refreshCasa(); },
   'login-pick-1': function(){ LOGIN.email = 'bernardo.n.f.mendes@gmail.com'; LOGIN.msg = ''; refreshLogin(); },
@@ -2408,6 +2648,16 @@ document.addEventListener('change', function(e){
   var el = e.target;
   if (el.id === 'importFile'){ importData(el.files && el.files[0]); return; }
   if (el.id === 'scanFile'){ scanFile(el.files && el.files[0]); return; }
+  if (el.id === 'faturaFile'){ readFatura(el.files && el.files[0]); return; }
+  if (el.dataset && el.dataset.fat === 'store' && FAT){ FAT.store = el.value; renderSheet(false); return; }
+  if (el.dataset && el.dataset.fatIng !== undefined && FAT){
+    var it = FAT.items[Number(el.dataset.fatIng)];
+    it.ingId = el.value; var ing = IMAP[it.ingId];
+    it.price = ing ? packPriceFromInvoice(it, ing) : null;
+    it.on = !!ing && it.price != null;
+    renderSheet(false); return;
+  }
+  if (el.dataset && el.dataset.fatOn !== undefined && FAT){ FAT.items[Number(el.dataset.fatOn)].on = el.checked; renderSheet(false); return; }
   if (el.dataset && el.dataset.sc && SH && SH.type === 'scan' && SC){
     var f = el.dataset.sc;
     SC[f] = el.value;
@@ -2431,6 +2681,7 @@ document.addEventListener('change', function(e){
 document.addEventListener('input', function(e){
   var el = e.target;
   if (el.dataset && el.dataset.l){ LOGIN[el.dataset.l] = el.value; return; }
+  if (el.dataset && el.dataset.fatPrice !== undefined && FAT){ FAT.items[Number(el.dataset.fatPrice)].price = parseFloat(String(el.value).replace(',', '.')) || null; return; }
   if (el.classList && el.classList.contains('pinput')){
     var g = el.closest('.prow') && el.closest('.prow').querySelector('.pguard');
     if (g) g.hidden = false;

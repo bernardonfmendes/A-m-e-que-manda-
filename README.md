@@ -40,6 +40,15 @@ Na folha "Casa e dados":
 - **Importar ficheiro** repõe a partir de um ficheiro exportado (e envia para a casa).
 - **Restaurar cópia deste dispositivo** recupera a versão local que foi posta de lado quando a casa tinha uma versão mais recente.
 
+## Ler fatura (PDF)
+
+Na zona de **Preços**, o botão **Ler fatura** aceita o PDF de uma fatura de supermercado.
+- A app reconhece o supermercado (Pingo Doce, Continente, Auchan, Lidl, Mercadona) e lê as linhas de artigos.
+- Os preços guardados são os **de tabela**, sem descontos.
+- Nada fica marcado por defeito: confirmas cada linha, escolhes o ingrediente e confirmas o preço da embalagem.
+- A app compara a soma das linhas com o total da fatura e avisa se não bater certo.
+- Só funciona com PDF com texto. Fotos ainda não são lidas por esta função.
+
 ## Guardar na casa
 
 - Cada alteração fica guardada neste dispositivo logo, e o cabeçalho mostra **Alterações por guardar**.
