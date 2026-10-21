@@ -1133,7 +1133,11 @@ function esc(s){
 function num2(x){ return (Math.round(x * 100) / 100).toFixed(2).replace('.', ','); }
 function plural(n, one, many){ return n === 1 ? one : many; }
 
-/* ---------- guardar e sincronizar (Supabase: uma casa, com login por email) ---------- */
+/* ---------- guardar e sincronizar (Supabase: uma casa, login com email e palavra-passe) ---------- */
+var BACKUP_KEY = 'budgetchef.backup', UNSYNC_KEY = 'budgetchef.unsynced';
+var PENDING_REMOTE = null;          /* alteração da casa recebida enquanto um campo estava ativo */
+var PASS_RECOVERY = false;          /* veio do link "esqueci-me da palavra-passe" */
+
 function loadLocal(){
   try { var raw = localStorage.getItem(LS_KEY); if (raw) return JSON.parse(raw); } catch (e) {}
   return null;
@@ -1141,9 +1145,16 @@ function loadLocal(){
 function saveLocal(){
   try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) {}
 }
+/* "não enviado": há alterações neste dispositivo que ainda não chegaram ao Supabase */
+function isUnsynced(){ try { return localStorage.getItem(UNSYNC_KEY) === '1'; } catch (e) { return false; } }
+function markUnsynced(v){ try { if (v) localStorage.setItem(UNSYNC_KEY, '1'); else localStorage.removeItem(UNSYNC_KEY); } catch (e) {} }
+function backupLocal(){
+  try { localStorage.setItem(BACKUP_KEY, JSON.stringify({at: Date.now(), state: S})); } catch (e) {}
+}
 function persist(){
   S.savedAt = Date.now();
   saveLocal();
+  markUnsynced(true);
   scheduleRemote();
 }
 function setSync(mode, txt){
@@ -1153,7 +1164,7 @@ function setSync(mode, txt){
   else el.textContent = txt || (mode === 'cloud' ? 'Guardado na casa' : 'A ligar…');
 }
 function scheduleRemote(){
-  if (!REMOTE.ready) return;
+  if (!REMOTE.ready) return;               /* só grava depois de a casa ter sido lida */
   clearTimeout(REMOTE.timer);
   REMOTE.timer = setTimeout(function(){ REMOTE.timer = null; pushRemote(); }, 800);
 }
@@ -1161,9 +1172,11 @@ function pushRemote(){
   if (!REMOTE.ready || !SESSION) return;
   if (REMOTE.busy){ REMOTE.dirty = true; return; }
   REMOTE.busy = true;
-  var row = {id: 'casa', state: clone(S), saved_at: S.savedAt || Date.now(), updated_by: SESSION.user.email};
+  var at = S.savedAt || Date.now();
+  var row = {id: 'casa', state: clone(S), saved_at: at, updated_by: SESSION.user.email};
   SB.from('casa').upsert(row).then(function(res){
     if (res.error){ setSync('local', 'Sem ligação: guardado neste dispositivo'); return; }
+    if (S.savedAt === at) markUnsynced(false);   /* se houve edições entretanto, continuam marcadas */
     setSync('cloud');
   }).catch(function(){ setSync('local', 'Sem ligação: guardado neste dispositivo'); })
   .then(function(){
@@ -1172,18 +1185,33 @@ function pushRemote(){
   });
 }
 function applyRemote(state, savedAt){
+  var el = document.activeElement;
+  if (el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)){ PENDING_REMOTE = {state: state, savedAt: savedAt}; return; }
   S = normalizeState(clone(state));
   S.savedAt = savedAt;
   rebuildIngIndex(S);
   saveLocal();
   render();
 }
+/* a casa tem uma versão mais recente: se este dispositivo tinha alterações por enviar, guarda-as primeiro */
+function reconcile(row){
+  var localAt = S.savedAt || 0, remoteAt = row ? (row.saved_at || 0) : 0;
+  if (!row || !row.state){ pushRemote(); return; }
+  if (remoteAt > localAt){
+    if (isUnsynced()){
+      backupLocal();
+      toast('Havia alterações neste dispositivo que ainda não tinham sido enviadas. Ficaram numa cópia de segurança.');
+    }
+    markUnsynced(false);
+    applyRemote(row.state, remoteAt);
+  } else if (localAt > remoteAt){
+    pushRemote();
+  }
+}
 function pullRemote(){
   return SB.from('casa').select('state,saved_at').eq('id', 'casa').maybeSingle().then(function(res){
     if (res.error) throw res.error;
-    var row = res.data;
-    if (row && row.state && (row.saved_at || 0) > (S.savedAt || 0)) applyRemote(row.state, row.saved_at);
-    else if (!row || (S.savedAt || 0) > (row.saved_at || 0)) pushRemote();
+    reconcile(res.data);
   });
 }
 function subscribeRemote(){
@@ -1193,31 +1221,43 @@ function subscribeRemote(){
     function(p){
       var row = p.new;
       if (!row || !row.state || REMOTE.busy || REMOTE.timer) return;
-      if ((row.saved_at || 0) > (S.savedAt || 0)) applyRemote(row.state, row.saved_at);
+      if (row.updated_by === (SESSION && SESSION.user.email) && row.saved_at === S.savedAt) return;
+      if ((row.saved_at || 0) > (S.savedAt || 0)){
+        if (isUnsynced()) return;           /* há edições locais por enviar: a leitura inicial decide */
+        applyRemote(row.state, row.saved_at);
+      }
     }).subscribe();
 }
 function startSync(){
+  if (REMOTE.starting || REMOTE.ready) return;
+  REMOTE.starting = true;
   setSync('off', 'A ligar…');
   pullRemote().then(function(){
-    REMOTE.ready = true;
+    REMOTE.ready = true; REMOTE.starting = false;
     setSync('cloud');
     subscribeRemote();
+    if (isUnsynced()) pushRemote();
     if (SH && SH.type === 'login') renderSheet(false);
   }).catch(function(err){
-    REMOTE.ready = false;
+    REMOTE.starting = false; REMOTE.ready = false;
     var noAccess = err && (err.code === '42501' || /row-level|permission/i.test(err.message || ''));
     setSync('local', noAccess ? 'Esta conta não está autorizada nesta casa' : 'Sem ligação: guardado neste dispositivo');
   });
+}
+function stopSync(){
+  REMOTE.ready = false; REMOTE.starting = false;
+  if (REMOTE.ch && SB){ SB.removeChannel(REMOTE.ch); REMOTE.ch = null; }
 }
 function initRemote(){
   var cfg = window.BC_CONFIG || {};
   if (!window.supabase || !cfg.SUPABASE_URL || /COLOCA/.test(cfg.SUPABASE_URL)){ setSync('local'); return; }
   SB = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, {auth: {persistSession: true, detectSessionInUrl: true}});
   SB.auth.onAuthStateChange(function(ev, s){
+    if (ev === 'PASSWORD_RECOVERY'){ PASS_RECOVERY = true; SESSION = s || null; openSheet({type: 'login'}); return; }
     var was = SESSION;
     SESSION = s || null;
     if (SESSION && !was) startSync();
-    if (!SESSION){ REMOTE.ready = false; setSync('local'); }
+    if (!SESSION){ stopSync(); setSync('local'); }
     if (SH && SH.type === 'login') renderSheet(false);
   });
   SB.auth.getSession().then(function(r){
@@ -1225,21 +1265,78 @@ function initRemote(){
     if (SESSION) startSync(); else setSync('local');
   }, function(){ setSync('local'); });
 }
-function sendLogin(){
-  var em = LOGIN.email.trim();
+/* mensagens de erro do Supabase, em português */
+function authError(err){
+  var m = (err && err.message) || '';
+  if (/invalid login/i.test(m)) return 'Email ou palavra-passe incorretos.';
+  if (/rate limit|too many/i.test(m)) return 'Muitas tentativas. Espera uns minutos.';
+  if (/password/i.test(m) && /6|short|weak/i.test(m)) return 'A palavra-passe tem de ter pelo menos 6 caracteres.';
+  return 'Não consegui concluir. Tenta outra vez.';
+}
+function signIn(){
+  var em = (LOGIN.email || '').trim(), pw = LOGIN.pass || '';
   if (!SB){ toast('A ligação à casa não está configurada.'); return; }
   if (!/^\S+@\S+\.\S+$/.test(em)){ toast('Escreve um email válido.'); return; }
-  SB.auth.signInWithOtp({email: em, options: {emailRedirectTo: location.href.split('#')[0]}}).then(function(r){
-    if (r.error){ toast('Não consegui enviar o link. Tenta daqui a pouco.'); return; }
-    LOGIN.sent = true; LOGIN.email = em; renderSheet(false); toast('Link enviado para o teu email.');
+  if (!pw){ toast('Escreve a palavra-passe.'); return; }
+  LOGIN.msg = 'A entrar…'; renderSheet(false);
+  SB.auth.signInWithPassword({email: em, password: pw}).then(function(r){
+    LOGIN.pass = ''; LOGIN.msg = '';
+    if (r.error){ LOGIN.msg = authError(r.error); renderSheet(false); return; }
+    toast('Entraste na casa.');
+  });
+}
+function resetPassword(){
+  var em = (LOGIN.email || '').trim();
+  if (!SB){ toast('A ligação à casa não está configurada.'); return; }
+  if (!/^\S+@\S+\.\S+$/.test(em)){ toast('Escreve o email primeiro.'); return; }
+  SB.auth.resetPasswordForEmail(em, {redirectTo: location.href.split('#')[0]}).then(function(){
+    LOGIN.msg = 'Se o email estiver autorizado, recebes um link para definir a palavra-passe.';
+    renderSheet(false);
+  });
+}
+function setNewPassword(){
+  var pw = LOGIN.novaPass || '';
+  if (pw.length < 6){ toast('A palavra-passe tem de ter pelo menos 6 caracteres.'); return; }
+  SB.auth.updateUser({password: pw}).then(function(r){
+    if (r.error){ toast(authError(r.error)); return; }
+    LOGIN.novaPass = ''; PASS_RECOVERY = false;
+    toast('Palavra-passe definida.');
+    closeSheet();
   });
 }
 function logout(){
   if (!SB) return;
   SB.auth.signOut().then(function(){
-    SESSION = null; REMOTE.ready = false; setSync('local');
+    SESSION = null; stopSync(); setSync('local');
     renderSheet(false); toast('Saíste da casa. Os dados ficam neste dispositivo.');
   });
+}
+/* cópia de segurança: exportar o estado deste dispositivo, importar um ficheiro, restaurar a cópia local */
+function exportData(){
+  var blob = new Blob([JSON.stringify({app: 'A Mãe é que Sabe', exportado: new Date().toISOString(), state: S}, null, 2)], {type: 'application/json'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'a-mae-que-sabe-' + new Date().toISOString().slice(0, 10) + '.json';
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+function importData(file){
+  if (!file) return;
+  file.text().then(function(txt){
+    var j = JSON.parse(txt), st = j && j.state ? j.state : j;
+    if (!st || !Array.isArray(st.recipes)) throw new Error('formato');
+    S = normalizeState(clone(st)); rebuildIngIndex(S);
+    persist(); closeSheet(); render();
+    toast('Dados importados e enviados para a casa.');
+  }).catch(function(){ toast('Este ficheiro não é uma cópia válida da app.'); });
+}
+function restoreBackup(){
+  var raw; try { raw = localStorage.getItem(BACKUP_KEY); } catch (e) {}
+  if (!raw){ toast('Não há cópia de segurança neste dispositivo.'); return; }
+  var b = JSON.parse(raw);
+  S = normalizeState(clone(b.state)); rebuildIngIndex(S);
+  persist(); closeSheet(); render();
+  toast('Cópia de segurança restaurada.');
 }
 
 /* ---------- datas ---------- */
@@ -1950,17 +2047,30 @@ function saveScan(){
 
 function sheetLogin(){
   var h = '';
-  if (SESSION){
+  if (SESSION && !PASS_RECOVERY){
     h += '<p class="note">Estás ligado como <b>' + esc(SESSION.user.email) + '</b>. A semana, as receitas, os preços e a lista são partilhados com quem também estiver ligado à casa.</p>';
     h += '<button type="button" class="btn block" data-act="logout">Sair</button>';
+  } else if (PASS_RECOVERY){
+    h += '<p class="note">Escolhe a nova palavra-passe (pelo menos 6 caracteres).</p>';
+    h += '<input class="inp" type="password" autocomplete="new-password" placeholder="Nova palavra-passe" data-l="novaPass" aria-label="Nova palavra-passe" value="">';
+    h += '<button type="button" class="btn pri block" data-act="login-nova">Definir palavra-passe</button>';
   } else {
-    h += '<p class="note">Põe o teu email. Enviamos um link para entrares, sem palavra-passe. Só os emails autorizados entram na casa.</p>';
+    h += '<p class="note">Entra com o teu email e palavra-passe. Só os emails autorizados entram na casa.</p>';
     h += '<input id="loginEmail" class="inp" type="email" autocomplete="email" inputmode="email" placeholder="o.teu@email.com" data-l="email" aria-label="Email" value="' + esc(LOGIN.email) + '">';
-    h += '<button type="button" class="btn pri block" data-act="login-send">Enviar link</button>';
-    if (LOGIN.sent) h += '<p class="note">Link enviado para ' + esc(LOGIN.email) + '. Abre o email neste telemóvel e toca no link.</p>';
+    h += '<input id="loginPass" class="inp" type="password" autocomplete="current-password" placeholder="Palavra-passe" data-l="pass" aria-label="Palavra-passe" value="">';
+    h += '<button type="button" class="btn pri block" data-act="login-send">Entrar</button>';
+    h += '<button type="button" class="linkbtn" data-act="login-reset">Esqueci-me da palavra-passe</button>';
+    if (LOGIN.msg) h += '<p class="note" role="status">' + esc(LOGIN.msg) + '</p>';
   }
+  h += '<div><div class="sect" style="margin-top:4px">Cópia de segurança</div>';
+  h += '<p class="note">Guarda os dados num ficheiro, ou importa um ficheiro guardado antes.</p>';
+  h += '<div class="row wrap" style="margin-top:8px"><button type="button" class="btn" data-act="data-export">Exportar dados</button>' +
+       '<label class="btn" style="cursor:pointer">Importar ficheiro<input id="importFile" type="file" accept="application/json,.json" hidden></label></div>';
+  var hasBackup = false; try { hasBackup = !!localStorage.getItem(BACKUP_KEY); } catch (e) {}
+  if (hasBackup) h += '<div class="row wrap" style="margin-top:8px"><button type="button" class="btn" data-act="backup-restore">Restaurar cópia deste dispositivo</button></div>';
+  h += '</div>';
   h += '<p class="note">Sem ligar, a app guarda tudo só neste dispositivo.</p>';
-  return {title: 'Partilhar com a casa', html: h};
+  return {title: SESSION && !PASS_RECOVERY ? 'Casa e dados' : 'Partilhar com a casa', html: h};
 }
 
 var SHEETS = {picker: sheetPicker, recipe: sheetRecipe, editor: sheetEditor, newing: sheetNewIng, scan: sheetScan, login: sheetLogin};
@@ -2062,9 +2172,13 @@ var ACTS = {
   'scan-back': function(){ SC.step = 'photo'; SC.error = ''; renderSheet(false); },
   'scan-cand': function(el){ SC.price = el.dataset.v; renderSheet(false); },
   'scan-save': saveScan,
-  'login-open': function(){ LOGIN.sent = false; openSheet({type: 'login'}); },
-  'login-send': sendLogin,
+  'login-open': function(){ LOGIN.msg = ''; openSheet({type: 'login'}); },
+  'login-send': signIn,
+  'login-reset': resetPassword,
+  'login-nova': setNewPassword,
   'logout': logout,
+  'data-export': exportData,
+  'backup-restore': restoreBackup,
   'clear-week': function(){ S.plan = {}; S.example = false; persist(); render(); toast('Semana limpa'); },
   'pick': function(el){
     UI.pk = {q: '', cat: 'all', t: String(S.tier), fit: false};
@@ -2184,6 +2298,7 @@ document.addEventListener('click', function(e){
 });
 document.addEventListener('change', function(e){
   var el = e.target;
+  if (el.id === 'importFile'){ importData(el.files && el.files[0]); return; }
   if (el.id === 'scanFile'){ scanFile(el.files && el.files[0]); return; }
   if (el.dataset && el.dataset.sc && SH && SH.type === 'scan' && SC){
     var f = el.dataset.sc;
@@ -2207,7 +2322,7 @@ document.addEventListener('change', function(e){
 });
 document.addEventListener('input', function(e){
   var el = e.target;
-  if (el.dataset && el.dataset.l === 'email'){ LOGIN.email = el.value; return; }
+  if (el.dataset && el.dataset.l){ LOGIN[el.dataset.l] = el.value; return; }
   if (el.dataset && el.dataset.sc && SH && SH.type === 'scan' && SC){ SC[el.dataset.sc] = el.value; return; }
   if (el.id === 'rSearch'){ UI.rq = el.value; $('#rList').innerHTML = recipeCards(); return; }
   if (el.id === 'pSearch'){ UI.pq = el.value; $('#pList').innerHTML = priceRows(); return; }
@@ -2234,6 +2349,13 @@ document.addEventListener('keydown', function(e){
 });
 
 /* ---------- arranque ---------- */
+document.addEventListener('focusout', function(){
+  setTimeout(function(){
+    if (PENDING_REMOTE && !/^(INPUT|SELECT|TEXTAREA)$/.test((document.activeElement || {}).tagName || '')){
+      var p = PENDING_REMOTE; PENDING_REMOTE = null; applyRemote(p.state, p.savedAt);
+    }
+  }, 0);
+});
 $('#selStore').innerHTML = STORES.map(function(s){ return '<option value="' + s.id + '">' + esc(s.nome) + '</option>'; }).join('');
 render();
 initRemote();

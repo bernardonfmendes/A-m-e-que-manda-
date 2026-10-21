@@ -26,8 +26,8 @@ create policy "casa: membros atualizam" on public.casa for update to authenticat
 -- 3) Atualizações em tempo real para os dois ecrãs.
 alter publication supabase_realtime add table public.casa;
 
--- 4) Os dois emails da casa (trocar pelos reais).
+-- 4) Os dois emails da casa.
 insert into public.allowed_emails (email) values
-  ('banaduh@gmail.com'),
-  ('EMAIL_DA_MULHER@exemplo.com')
+  ('bernardo.n.f.mendes@gmail.com'),
+  ('paulanevesramalho@gmail.com')
 on conflict do nothing;

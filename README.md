@@ -1,1 +1,51 @@
-# A-m-e-que-manda-
+# A Mãe é que Sabe
+
+App partilhada de receitas, planeamento semanal, custos e lista de compras, para duas pessoas (a casa).
+Corre em GitHub Pages e guarda os dados no Supabase. Sem ligação, funciona só neste dispositivo.
+
+## Estrutura
+
+- `src/` — código-fonte, dividido por módulos (dados, nutrição, lógica, interface).
+- `build.sh` — junta `src/` em `app.bundle.js` e gera `index.html`. Correr sempre depois de editar `src/`.
+- `config.js` — URL do projeto Supabase e chave **anon** (pública; a segurança está nas regras RLS).
+- `supabase-schema.sql` — tabelas `allowed_emails` e `casa`, regras de acesso e publicação em tempo real.
+- `tests/` — testes de lógica (Node) e um teste de fumo de navegador (Playwright, 400 px).
+
+## Configuração (uma vez)
+
+1. No Supabase, SQL Editor: correr `supabase-schema.sql`.
+   Antes, substituir `EMAIL_DA_MULHER@exemplo.com` pelo email real dela.
+2. Authentication → Users: criar os dois utilizadores com email e palavra-passe
+   (ou usar "Send password recovery" para cada um definir a sua).
+3. Authentication → Providers → Email: desligar **Allow new users to sign up**,
+   para que ninguém se registe sozinho. O acesso aos dados já é bloqueado pelas regras RLS
+   para emails que não estejam em `allowed_emails`.
+4. Authentication → URL Configuration: em **Site URL** pôr
+   `https://bernardonfmendes.github.io/A-m-e-que-manda-/` e acrescentar o mesmo endereço em **Redirect URLs**
+   (é para onde vai o link de "Esqueci-me da palavra-passe").
+5. GitHub Pages: origem = branch principal, pasta raiz.
+
+## Como entrar
+
+- Botão **Partilhar com a casa** (no cabeçalho): email e palavra-passe.
+- **Esqueci-me da palavra-passe** envia um link para definir uma nova.
+- Depois de entrar, a semana, as receitas, os preços e a lista são os mesmos para os dois.
+
+## Cópia de segurança
+
+Na folha "Casa e dados":
+- **Exportar dados** descarrega um ficheiro `.json` com tudo.
+- **Importar ficheiro** repõe a partir de um ficheiro exportado (e envia para a casa).
+- **Restaurar cópia deste dispositivo** recupera a versão local que foi posta de lado quando a casa tinha uma versão mais recente.
+
+Regra de sincronização: a versão mais recente ganha. Se um dispositivo tiver alterações que ainda não foram enviadas
+e a casa tiver uma versão mais nova, essas alterações ficam numa cópia de segurança local antes de a casa ser carregada.
+
+## Desenvolvimento
+
+```sh
+./build.sh                 # gera app.bundle.js e index.html
+node tests/test-nutri.js   # nutrição e planeamento
+node tests/test-accept.js  # aceitação da semana e lista de compras
+node tests/test-scan.js    # leitura de etiquetas
+```
