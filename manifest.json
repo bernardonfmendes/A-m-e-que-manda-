@@ -2,7 +2,7 @@
   "name": "A Mãe é que Sabe",
   "short_name": "A Mãe é que Sabe",
   "description": "Receitas, semana e compras da casa.",
-  "start_url": "./",
+  "start_url": "./?v=2",
   "scope": "./",
   "display": "standalone",
   "background_color": "#FFF6F2",

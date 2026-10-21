@@ -21,7 +21,7 @@ Corre em GitHub Pages e guarda os dados no Supabase. Sem ligação, funciona só
    para que ninguém se registe sozinho. O acesso aos dados já é bloqueado pelas regras RLS
    para emails que não estejam em `allowed_emails`.
 4. Authentication → URL Configuration: em **Site URL** pôr
-   `https://bernardonfmendes.github.io/A-m-e-que-manda-/` e acrescentar o mesmo endereço em **Redirect URLs**
+   `https://bernardonfmendes.github.io/amaeequemanda/` e acrescentar o mesmo endereço em **Redirect URLs**
    (é para onde vai o link de "Esqueci-me da palavra-passe").
 5. GitHub Pages: origem = branch principal, pasta raiz.
 
