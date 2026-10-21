@@ -66,3 +66,13 @@ node tests/test-nutri.js   # nutrição e planeamento
 node tests/test-accept.js  # aceitação da semana e lista de compras
 node tests/test-scan.js    # leitura de etiquetas
 ```
+
+## Leitura de faturas com IA (Gemini, opcional)
+
+A função `supabase/functions/ler-fatura/index.ts` pede ao Gemini a lista de artigos de uma fatura. A chave **nunca** vai para o site.
+
+1. Supabase → **Edge Functions** → **Secrets** (ou Project Settings → Edge Functions): adicionar o segredo `GEMINI_API_KEY` com a chave do AI Studio.
+2. Edge Functions → **Deploy a new function** → **Via editor**: nome `ler-fatura`, colar o conteúdo de `supabase/functions/ler-fatura/index.ts` e publicar.
+3. Opcional: segredo `GEMINI_MODEL` com o nome do modelo indicado no AI Studio (por defeito `gemini-2.5-flash`).
+4. Se a IA não responder, a app usa a leitura básica e avisa no ecrã de revisão.
+

@@ -1292,6 +1292,19 @@ function invCleanName(nome){
   var s = String(nome).replace(/\s*\d+(?:[.,]\d+)?\s*(KG|G|ML|CL|LT|L|UN|U)(?![A-Za-z])/gi, '').replace(/\s+/g, ' ').trim().toLowerCase();
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
+
+/* usa as linhas da IA no mesmo formato da leitura básica, e confere com os totais da fatura */
+function aplicaIA(r0, ia){
+  var items = ia.linhas.map(function(l){
+    return {nome: String(l.nome || '').trim(), total: Number(l.precoLinha) || 0, desconto: 0,
+            peso: l.unidade === 'kg', qtd: Number(l.quantidade) || 1, qu: l.unidade || 'un', unit: null, qtdLinha: 1, pago: null};
+  }).filter(function(it){ return it.nome && it.total > 0; });
+  var soma = Math.round(items.reduce(function(a, it){ return a + it.total; }, 0) * 100) / 100;
+  var refs = [r0.regularTotal, r0.paidTotal].filter(function(v){ return v != null; });
+  var check = refs.length ? refs.some(function(v){ return Math.abs(v - soma) < 0.02; }) : null;
+  return {store: invoiceStore(String(ia.loja || '')) || r0.store, items: items, paidTotal: r0.paidTotal,
+          regularTotal: r0.regularTotal, soma: soma, somaPaga: soma, check: check};
+}
 /* app.js — interface de A Mãe é que Sabe. Usa data.js e core.js. */
 (function(){
 'use strict';
@@ -2387,16 +2400,32 @@ function loadPdfJs(){
     document.head.appendChild(s);
   });
 }
+/* pede a leitura da fatura à IA (função "ler-fatura" no Supabase). Sem sessão ou sem resposta, rejeita e fica a leitura básica. */
+function lerComIA(text){
+  if (!SB || !SESSION) return Promise.reject(new Error('sem sessão'));
+  var semNif = String(text).replace(/NIF[^\n]*/gi, 'NIF [removido]').replace(/\b\d{9}\b/g, '[removido]');
+  return SB.functions.invoke('ler-fatura', {body: {texto: semNif}}).then(function(res){
+    if (res.error || !res.data || !Array.isArray(res.data.linhas) || !res.data.linhas.length) throw new Error('ia');
+    return res.data;
+  });
+}
 function readFatura(file){
   FAT = {step: 'review', busy: true, store: null, items: [], msg: '', check: null};
   renderSheet(false);
   loadPdfJs().then(function(lib){
     return file.arrayBuffer().then(function(buf){ return pdfToText(lib, new Uint8Array(buf)); });
   }).then(function(text){
-    var r = parseInvoice(text);
+    var r0 = parseInvoice(text);
+    return lerComIA(text).then(function(ia){
+      return {r: aplicaIA(r0, ia), origem: 'ia'};
+    }, function(){
+      return {r: r0, origem: 'basica'};
+    });
+  }).then(function(o){
+    var r = o.r;
     var store = r.store || (S.store !== 'ref' ? S.store : null);
     var ref = r.regularTotal != null ? r.regularTotal : r.paidTotal;      /* o total que a fatura indica */
-    FAT = {step: 'review', busy: false, store: store, storeLido: r.store, check: r.check,
+    FAT = {step: 'review', busy: false, store: store, storeLido: r.store, check: r.check, origem: o.origem,
            total: ref, soma: r.regularTotal != null ? r.soma : r.somaPaga, somaPaga: r.somaPaga,
            msg: r.items.length ? '' : 'Não encontrei linhas de artigos nesta fatura.', items: r.items.map(function(it){
       var ing = matchInvoiceIngredient(it.nome, S);
@@ -2448,6 +2477,8 @@ function sheetFatura(){
   h += '<div class="field"><label class="lbl" for="fatStore">Supermercado' + (FAT.storeLido ? '' : ' (não reconhecido)') + '</label>' +
        '<select id="fatStore" class="inp" data-fat="store">' + (FAT.store ? '' : '<option value="">Escolher…</option>') + stores + '</select></div>';
   h += '<p class="note"' + (FAT.check === false ? ' class="verdict bad" style="font-size:14px"' : '') + '>' + esc(faturaCheckMsg()) + '</p>';
+  if (FAT.origem === 'ia') h += '<p class="note">Lido com a IA (Gemini). Confirma cada linha antes de guardar.</p>';
+  else if (FAT.origem === 'basica') h += '<p class="note">Leitura básica (a IA não respondeu). Confirma cada linha.</p>';
   if (FAT.msg) h += '<p class="note">' + esc(FAT.msg) + '</p>';
   var marcados = FAT.items.filter(function(it){ return it.on; }).length;
   h += '<p class="note">' + FAT.items.length + ' linhas lidas · ' + marcados + ' marcadas para guardar. Os preços são os de tabela (sem descontos).</p>';
