@@ -1255,6 +1255,43 @@ function pdfToText(lib, data){
     }, Promise.resolve(''));
   });
 }
+
+/* quantidade comprada numa linha da fatura, na unidade base (g, ml ou un) */
+function invBase(qtd, qu){
+  var q = Number(qtd) || 0;
+  if (qu === 'kg') return {q: q * 1000, un: 'g'};
+  if (qu === 'g')  return {q: q, un: 'g'};
+  if (qu === 'l')  return {q: q * 1000, un: 'ml'};
+  if (qu === 'ml') return {q: q, un: 'ml'};
+  return {q: q, un: 'un'};
+}
+/* preço por unidade base (por un, g ou ml) */
+function invPerUnit(total, qtd, qu){
+  var b = invBase(qtd, qu);
+  return (total == null || !(b.q > 0)) ? null : total / b.q;
+}
+/* preço da embalagem do ingrediente a partir do que foi comprado; null se as unidades não coincidirem */
+function invPackPrice(total, qtd, qu, ing){
+  if (!ing || total == null) return null;
+  var b = invBase(qtd, qu);
+  if (!(b.q > 0) || b.un !== ing.u) return null;
+  return round2(total / b.q * ing.pack);
+}
+/* quantidade e unidade por defeito, a partir do nome e do peso da linha */
+function invDefaultQty(it){
+  var s = invoiceSize(it.nome);
+  if (s){
+    var k = (!it.peso && it.qtd > 0) ? it.qtd : 1;
+    return {qtd: s.qtd * k, qu: s.un === 'un' ? 'un' : s.un};
+  }
+  if (it.peso) return {qtd: it.qtd, qu: 'kg'};
+  return {qtd: (it.qtd > 0 ? it.qtd : 1), qu: 'un'};
+}
+/* nome para um ingrediente novo: sem o tamanho e com a primeira letra maiúscula */
+function invCleanName(nome){
+  var s = String(nome).replace(/\s*\d+(?:[.,]\d+)?\s*(KG|G|ML|CL|LT|L|UN|U)(?![A-Za-z])/gi, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 /* app.js — interface de A Mãe é que Sabe. Usa data.js e core.js. */
 (function(){
 'use strict';
@@ -2172,6 +2209,13 @@ function saveNewIng(){
   S.customIngs.push(ing);
   rebuildIngIndex(S);
   persist();
+  if (NI.from === 'fatura'){
+    var linha = FAT && FAT.items[NI.fatIdx];
+    if (linha){ linha.ingId = ing.id; recalcFat(linha); linha.on = linha.price != null; }
+    NI = null; SH = {type: 'fatura'}; renderSheet(true);
+    toast('Ingrediente criado');
+    return;
+  }
   if (NI.from === 'editor'){
     var empty = null;
     ED.rows.forEach(function(r){ if (!r.id && !empty) empty = r; });
@@ -2356,15 +2400,33 @@ function readFatura(file){
            total: ref, soma: r.regularTotal != null ? r.soma : r.somaPaga, somaPaga: r.somaPaga,
            msg: r.items.length ? '' : 'Não encontrei linhas de artigos nesta fatura.', items: r.items.map(function(it){
       var ing = matchInvoiceIngredient(it.nome, S);
-      var price = ing ? packPriceFromInvoice(it, ing) : null;
-      return {nome: it.nome, total: it.total, desconto: it.desconto, peso: it.peso, qtd: it.qtd, unit: it.unit,
-              ingId: ing ? ing.id : '', price: price, on: false};     /* nada fica marcado sem confirmação */
+      var d = invDefaultQty(it);
+      var row = {nome: it.nome, total: it.total, peso: it.peso, qtdLinha: it.qtd, qtd: d.qtd, qu: d.qu,
+                 ingId: ing ? ing.id : '', price: null, on: false};      /* nada fica marcado sem confirmação */
+      recalcFat(row);
+      return row;
     })};
     renderSheet(false);
   }).catch(function(){
     FAT = {step: 'pick', busy: false, msg: 'Não consegui ler este PDF. Confirma que é a fatura em PDF (não uma foto) e tenta de novo.'};
     renderSheet(false);
   });
+}
+/* recalcula o preço da embalagem de uma linha, com a quantidade e o ingrediente escolhidos */
+function recalcFat(it){
+  var ing = it.ingId ? IMAP[it.ingId] : null;
+  it.price = ing ? invPackPrice(it.total, it.qtd, it.qu, ing) : null;
+  it.erroUnidade = ing && it.price == null ? 'A unidade não coincide: o ingrediente é em ' + ({g: 'gramas', ml: 'mililitros', un: 'unidades'}[ing.u] || ing.u) + '. Ajusta a unidade ou escolhe outro ingrediente.' : '';
+  if (ing && it.price == null) it.on = false;
+  return it;
+}
+var UNIDADES = [['un', 'unidades'], ['g', 'gramas'], ['kg', 'quilos'], ['ml', 'mililitros'], ['l', 'litros']];
+function perUnitText(it){
+  var v = invPerUnit(it.total, it.qtd, it.qu);
+  if (v == null) return '';
+  var b = invBase(it.qtd, it.qu);
+  if (b.un === 'un') return 'Fica a ' + eur(v) + ' por unidade.';
+  return 'Fica a ' + eur(v * 1000) + (b.un === 'g' ? ' por quilo.' : ' por litro.');
 }
 function faturaCheckMsg(){
   if (FAT.check === true) return 'A soma das linhas (' + eur(FAT.soma) + ') bate certo com o total da fatura (' + eur(FAT.total) + ').';
@@ -2390,11 +2452,21 @@ function sheetFatura(){
   var marcados = FAT.items.filter(function(it){ return it.on; }).length;
   h += '<p class="note">' + FAT.items.length + ' linhas lidas · ' + marcados + ' marcadas para guardar. Os preços são os de tabela (sem descontos).</p>';
   FAT.items.forEach(function(it, i){
+    var ing = it.ingId ? IMAP[it.ingId] : null;
     h += '<div class="fat-row">' +
       '<label><input type="checkbox" data-fat-on="' + i + '"' + (it.on ? ' checked' : '') + '> <span>' + esc(it.nome) + '</span> <small class="mono">' + eur(it.total) + '</small></label>' +
       '<select class="inp" data-fat-ing="' + i + '" aria-label="Corresponde a ' + esc(it.nome) + '">' + ingOptions(it.ingId) + '</select>' +
-      '<input class="inp" type="number" step="0.01" min="0" inputmode="decimal" data-fat-price="' + i + '" value="' + (it.price == null ? '' : it.price.toFixed(2)) + '" placeholder="Preço da embalagem (€)" aria-label="Preço da embalagem de ' + esc(it.nome) + '">' +
-      (it.ingId && it.price == null ? '<p class="note">Não consegui calcular o preço da embalagem. Escreve-o.</p>' : '') +
+      '<div class="two"><div class="field"><label class="lbl" for="fq' + i + '">Quantidade comprada</label>' +
+        '<input id="fq' + i + '" class="inp" type="number" step="any" min="0" inputmode="decimal" data-fat-qty="' + i + '" value="' + (it.qtd || '') + '"></div>' +
+      '<div class="field"><label class="lbl" for="fu' + i + '">Unidade</label><select id="fu' + i + '" class="inp" data-fat-qu="' + i + '">' +
+        UNIDADES.map(function(u){ return '<option value="' + u[0] + '"' + (u[0] === it.qu ? ' selected' : '') + '>' + u[1] + '</option>'; }).join('') +
+        '</select></div></div>' +
+      (perUnitText(it) ? '<p class="note">' + esc(perUnitText(it)) + '</p>' : '') +
+      '<div class="field"><label class="lbl" for="fp' + i + '">Preço da embalagem' + (ing ? ' (' + ing.pack + ' ' + ing.u + ')' : '') + ' (€)</label>' +
+        '<input id="fp' + i + '" class="inp" type="number" step="0.01" min="0" inputmode="decimal" data-fat-price="' + i + '" value="' + (it.price == null ? '' : it.price.toFixed(2)) + '"></div>' +
+      (it.erroUnidade ? '<p class="note verdict bad" style="font-size:14px">' + esc(it.erroUnidade) + '</p>' : '') +
+      (!it.ingId ? '<p class="note">Sem correspondência. Escolhe um ingrediente ou cria um novo.</p>' : '') +
+      '<button type="button" class="linkbtn" data-act="fat-novo" data-i="' + i + '">+ Criar ingrediente com esta linha</button>' +
       '</div>';
   });
   h += '<button type="button" class="btn pri block" data-act="fat-save">Guardar preços marcados</button>';
@@ -2517,6 +2589,11 @@ var ACTS = {
   'casa-guardar': function(){ pushSafe(); },
   'fat-open': function(){ FAT = {step: 'pick', busy: false, msg: ''}; openSheet({type: 'fatura'}); },
   'fat-save': function(){ faturaSave(); },
+  'fat-novo': function(el){
+    var i = Number(el.dataset.i), it = FAT.items[i], b = invBase(it.qtd, it.qu);
+    NI = {from: 'fatura', fatIdx: i, nome: invCleanName(it.nome), cat: 'merc', u: b.un, pack: b.q > 0 ? round2(b.q) : '', price: round2(it.total) || '', tipo: 'out'};
+    SH = {type: 'newing'}; renderSheet(true);
+  },
   'price-save': function(el){ var inp = el.closest('.prow').querySelector('.pinput'); setPrice(inp); toast('Preço guardado.'); },
   'casa-atualizar': function(){ refreshCasa(); },
   'login-pick-1': function(){ LOGIN.email = 'bernardo.n.f.mendes@gmail.com'; LOGIN.msg = ''; refreshLogin(); },
@@ -2592,7 +2669,9 @@ var ACTS = {
   'new-ing': function(){ NI = {from: 'prices', nome: '', cat: 'merc', u: 'g', pack: '', price: '', tipo: 'out'}; openSheet({type: 'newing'}); },
   'ni-save': saveNewIng,
   'ni-cancel': function(){
-    if (NI && NI.from === 'editor'){ NI = null; SH = {type: 'editor'}; renderSheet(true); } else closeSheet();
+    if (NI && NI.from === 'editor'){ NI = null; SH = {type: 'editor'}; renderSheet(true); }
+    else if (NI && NI.from === 'fatura'){ NI = null; SH = {type: 'fatura'}; renderSheet(true); }
+    else closeSheet();
   },
   'sheet-close': closeSheet,
   'have': function(el){
@@ -2652,10 +2731,14 @@ document.addEventListener('change', function(e){
   if (el.dataset && el.dataset.fat === 'store' && FAT){ FAT.store = el.value; renderSheet(false); return; }
   if (el.dataset && el.dataset.fatIng !== undefined && FAT){
     var it = FAT.items[Number(el.dataset.fatIng)];
-    it.ingId = el.value; var ing = IMAP[it.ingId];
-    it.price = ing ? packPriceFromInvoice(it, ing) : null;
-    it.on = !!ing && it.price != null;
+    it.ingId = el.value; recalcFat(it); it.on = it.price != null;
     renderSheet(false); return;
+  }
+  if (el.dataset && el.dataset.fatQu !== undefined && FAT){
+    var l = FAT.items[Number(el.dataset.fatQu)]; l.qu = el.value; recalcFat(l); renderSheet(false); return;
+  }
+  if (el.dataset && el.dataset.fatQty !== undefined && FAT){
+    var q = FAT.items[Number(el.dataset.fatQty)]; q.qtd = parseFloat(String(el.value).replace(',', '.')) || 0; recalcFat(q); renderSheet(false); return;
   }
   if (el.dataset && el.dataset.fatOn !== undefined && FAT){ FAT.items[Number(el.dataset.fatOn)].on = el.checked; renderSheet(false); return; }
   if (el.dataset && el.dataset.sc && SH && SH.type === 'scan' && SC){

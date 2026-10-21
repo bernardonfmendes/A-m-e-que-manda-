@@ -48,6 +48,8 @@ Na zona de **Preços**, o botão **Ler fatura** aceita o PDF de uma fatura de su
 - Nada fica marcado por defeito: confirmas cada linha, escolhes o ingrediente e confirmas o preço da embalagem.
 - A app compara a soma das linhas com o total da fatura e avisa se não bater certo.
 - Só funciona com PDF com texto. Fotos ainda não são lidas por esta função.
+- Se o produto não existir, **+ Criar ingrediente com esta linha** cria-o com o nome e o tamanho da fatura.
+- Cada linha tem a **quantidade comprada** (ex.: 24 unidades). A app calcula o preço por unidade (ex.: 6,49 € ÷ 24 = 0,27 € por ovo).
 
 ## Guardar na casa
 
