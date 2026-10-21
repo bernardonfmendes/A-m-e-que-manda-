@@ -2456,7 +2456,8 @@ function readFatura(file){
       var ing = matchInvoiceIngredient(it.nome, S);
       var d = invDefaultQty(it);
       var row = {nome: it.nome, total: it.total, peso: it.peso, qtdLinha: it.qtd, qtd: d.qtd, qu: d.qu,
-                 ingId: ing ? ing.id : '', price: null, on: false};      /* nada fica marcado sem confirmação */
+                 ingId: ing ? ing.id : '', price: null, on: false,       /* nada fica marcado sem confirmação */
+                 novo: !ing && o.origem === 'ia'};                       /* produto que não existe: criado só ao guardar */
       recalcFat(row);
       return row;
     })};
@@ -2470,6 +2471,8 @@ function readFatura(file){
 function recalcFat(it){
   var ing = it.ingId ? IMAP[it.ingId] : null;
   it.price = ing ? invPackPrice(it.total, it.qtd, it.qu, ing) : null;
+  /* produto novo: a embalagem é a quantidade comprada, por isso o preço da embalagem é o total da linha */
+  if (!ing && it.novo && it.total > 0 && invBase(it.qtd, it.qu).q > 0) it.price = round2(it.total);
   it.erroUnidade = ing && it.price == null ? 'A unidade não coincide: o ingrediente é em ' + ({g: 'gramas', ml: 'mililitros', un: 'unidades'}[ing.u] || ing.u) + '. Ajusta a unidade ou escolhe outro ingrediente.' : '';
   if (ing && it.price == null) it.on = false;
   return it;
@@ -2521,7 +2524,8 @@ function sheetFatura(){
       '<div class="field"><label class="lbl" for="fp' + i + '">Preço da embalagem' + (ing ? ' (' + ing.pack + ' ' + ing.u + ')' : '') + ' (€)</label>' +
         '<input id="fp' + i + '" class="inp" type="number" step="0.01" min="0" inputmode="decimal" data-fat-price="' + i + '" value="' + (it.price == null ? '' : it.price.toFixed(2)) + '"></div>' +
       (it.erroUnidade ? '<p class="note verdict bad" style="font-size:14px">' + esc(it.erroUnidade) + '</p>' : '') +
-      (!it.ingId ? '<p class="note">Sem correspondência. Escolhe um ingrediente ou cria um novo.</p>' : '') +
+      (!it.ingId && it.novo ? '<p class="note">Produto novo: será criado como «' + esc(invCleanName(it.nome)) + '» (' + invBase(it.qtd, it.qu).q + ' ' + invBase(it.qtd, it.qu).un + ') ao guardar.</p>' : '') +
+      (!it.ingId && !it.novo ? '<p class="note">Sem correspondência. Escolhe um ingrediente ou cria um novo.</p>' : '') +
       '<button type="button" class="linkbtn" data-act="fat-novo" data-i="' + i + '">+ Criar ingrediente com esta linha</button>' +
       '</div>';
   });
@@ -2533,6 +2537,19 @@ function faturaSave(){
   if (!store){ toast('Escolhe o supermercado.'); return; }
   var semPreco = FAT.items.filter(function(it){ return it.on && it.ingId && !(it.price > 0); });
   if (semPreco.length){ toast('Falta o preço da embalagem de ' + semPreco[0].nome + '.'); return; }
+  /* cria os produtos novos marcados (só agora, ao guardar) */
+  FAT.items.forEach(function(it, k){
+    if (!it.on || !it.novo || it.ingId) return;
+    var b = invBase(it.qtd, it.qu);
+    if (!(b.q > 0) || !(it.total > 0) || !(it.price > 0)) return;
+    var ing = {id: 'c-' + Date.now().toString(36) + k, nome: invCleanName(it.nome), cat: 'merc', u: b.un,
+               pack: round2(b.q), est: round2(it.total), custom: true, nut: {g: 'out', p: 0}};
+    S.customIngs.push(ing);
+    it.ingId = ing.id; it.novo = false;
+  });
+  rebuildIngIndex(S);
+  FAT.items.forEach(function(it){ if (it.ingId) recalcFat(it); });
+
   var n = 0;
   if (!S.prices[store]) S.prices[store] = {};
   FAT.items.forEach(function(it){
@@ -2787,7 +2804,7 @@ document.addEventListener('change', function(e){
   if (el.dataset && el.dataset.fat === 'store' && FAT){ FAT.store = el.value; renderSheet(false); return; }
   if (el.dataset && el.dataset.fatIng !== undefined && FAT){
     var it = FAT.items[Number(el.dataset.fatIng)];
-    it.ingId = el.value; recalcFat(it); it.on = it.price != null;
+    it.ingId = el.value; it.novo = false; recalcFat(it); it.on = it.price != null;
     renderSheet(false); return;
   }
   if (el.dataset && el.dataset.fatQu !== undefined && FAT){
