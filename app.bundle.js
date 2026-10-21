@@ -2441,7 +2441,7 @@ function readFatura(file){
     return file.arrayBuffer().then(function(buf){ return pdfToText(lib, new Uint8Array(buf)); });
   }).then(function(text){
     var r0 = parseInvoice(text);
-    return comLimite(lerComIA(text), 25000, 'a IA demorou demasiado a responder').then(function(ia){
+    return comLimite(lerComIA(text), 90000, 'a IA demorou demasiado a responder').then(function(ia){
       return {r: aplicaIA(r0, ia), origem: 'ia'};
     }, function(e){
       return {r: r0, origem: 'basica', motivo: motivoIA(e)};
