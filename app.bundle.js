@@ -1152,12 +1152,20 @@ function backupLocal(){
   try { localStorage.setItem(BACKUP_KEY, JSON.stringify({at: Date.now(), state: S})); } catch (e) {}
 }
 /* cada alteração fica guardada neste dispositivo e marcada como "por guardar";
-   só sobe para a casa quando alguém carrega em Guardar */
+   e segue para a casa automaticamente (scheduleAutoSave) */
 function persist(){
   S.savedAt = Date.now();
   saveLocal();
   markUnsynced(true);
   renderSync();
+  scheduleAutoSave();
+}
+/* gravação automática: meio segundo depois da última alteração, sem botões */
+var AUTOSAVE_TIMER = null;
+function scheduleAutoSave(){
+  if (!SESSION || !REMOTE.ready) return;      /* sem ligação: fica por enviar e sai quando a ligação voltar */
+  clearTimeout(AUTOSAVE_TIMER);
+  AUTOSAVE_TIMER = setTimeout(function(){ AUTOSAVE_TIMER = null; pushSafe(); }, 500);
 }
 function setSync(mode, txt){
   REMOTE.note = txt || '';
@@ -1174,14 +1182,15 @@ function renderSync(){
   }
   var status;
   if (!REMOTE.ready) status = '<span>' + esc(REMOTE.note || 'A ligar…') + '</span>';
-  else if (isUnsynced()) status = '<span>Alterações por guardar</span> <button type="button" class="btn pri sm" data-act="casa-guardar">Guardar</button>';
-  else status = '<span>' + esc(REMOTE.note || 'Guardado na casa') + '</span>';
+  else if (REMOTE.note && REMOTE.note.indexOf('Sem ligação') === 0) status = '<span>' + esc(REMOTE.note) + '</span>';
+  else if (isUnsynced()) status = '<span>A guardar…</span>';
+  else status = '<span>Guardado na casa</span>';
   el.innerHTML = status + ' <button type="button" class="linkbtn" data-act="casa-atualizar">Atualizar</button><br>' + sheetBtn;
 }
 /* botão Atualizar: lê a casa e aplica a versão mais recente (só se não houver alterações por guardar) */
 function refreshCasa(){
   if (!SESSION){ openSheet({type: 'login'}); return; }
-  if (isUnsynced()){ toast('Tens alterações por guardar. Carrega primeiro em Guardar.'); return; }
+  if (isUnsynced()){ toast('Ainda estou a enviar as tuas alterações. Tenta daqui a uns segundos.'); return; }
   SB.from('casa').select('state,saved_at').eq('id', 'casa').maybeSingle().then(function(res){
     if (res.error) throw res.error;
     var row = res.data;
@@ -1194,31 +1203,23 @@ function refreshCasa(){
     }
   }).catch(function(err){ toast(syncErr(err)); });
 }
-/* botão Guardar: envia o estado deste dispositivo para a casa */
-function saveCasa(){
-  if (!SESSION){ openSheet({type: 'login'}); return; }
-  if (!REMOTE.ready){
-    toast('Ainda não estou ligado à casa. A tentar de novo…');
-    startSync();
-    return;
-  }
-  REMOTE.wantToast = true;
-  setSync('', 'A verificar a casa…');
+/* envia para a casa, mas primeiro verifica se a casa tem uma versão mais recente:
+   se tiver, não a sobrescreve (as alterações deste dispositivo ficam numa cópia de segurança) */
+function pushSafe(){
+  if (!SESSION || !REMOTE.ready) return;
+  if (REMOTE.busy){ REMOTE.dirty = true; return; }
   SB.from('casa').select('state,saved_at').eq('id', 'casa').maybeSingle().then(function(res){
     if (res.error) throw res.error;
     var row = res.data;
     if (row && row.state && (row.saved_at || 0) > (REMOTE.base || 0)){
-      /* a casa tem alterações que este dispositivo ainda não tinha: não as sobrescrever */
       backupLocal();
       markUnsynced(false);
-      REMOTE.wantToast = false;
       applyRemote(row.state, row.saved_at);
       toast('A casa tinha alterações mais recentes. As tuas ficaram numa cópia de segurança (Casa e dados).');
       return;
     }
-    setSync('', 'A guardar…');
     pushRemote();
-  }).catch(function(err){ REMOTE.wantToast = false; setSync('local', syncErr(err)); toast(syncErr(err)); });
+  }).catch(function(err){ setSync('local', syncErr(err)); });
 }
 function pushRemote(){
   if (!REMOTE.ready || !SESSION) return;
@@ -1227,15 +1228,14 @@ function pushRemote(){
   var at = S.savedAt || Date.now();
   var row = {id: 'casa', state: clone(S), saved_at: at, updated_by: SESSION.user.email};
   SB.from('casa').upsert(row).then(function(res){
-    if (res.error){ REMOTE.wantToast = false; setSync('local', syncErr(res.error)); toast(syncErr(res.error)); return; }
+    if (res.error){ setSync('local', syncErr(res.error)); return; }
     REMOTE.base = Math.max(REMOTE.base || 0, at);
     if (S.savedAt === at) markUnsynced(false);   /* se houve edições entretanto, continuam marcadas */
     setSync('cloud', 'Guardado na casa');
-    if (REMOTE.wantToast){ REMOTE.wantToast = false; toast('Guardado na casa.'); }
-  }).catch(function(err){ setSync('local', syncErr(err)); toast(syncErr(err)); })
+  }).catch(function(err){ setSync('local', syncErr(err)); })
   .then(function(){
     REMOTE.busy = false;
-    if (REMOTE.dirty){ REMOTE.dirty = false; pushRemote(); }
+    if (REMOTE.dirty){ REMOTE.dirty = false; pushSafe(); }
   });
 }
 function applyRemote(state, savedAt){
@@ -1278,10 +1278,7 @@ function subscribeRemote(){
       if (!row || !row.state || REMOTE.busy || REMOTE.timer) return;
       if (row.updated_by === (SESSION && SESSION.user.email) && row.saved_at === S.savedAt) return;
       if ((row.saved_at || 0) > (S.savedAt || 0)){
-        if (isUnsynced()){                  /* há edições locais por enviar: avisa, não substitui */
-          toast('A casa tem alterações novas. Carrega em Guardar para as receber (as tuas ficam numa cópia de segurança).');
-          return;
-        }
+        if (isUnsynced()) return;           /* há alterações locais a caminho: a gravação verifica a casa antes de enviar */
         applyRemote(row.state, row.saved_at);
       }
     }).subscribe();
@@ -1295,7 +1292,7 @@ function startSync(){
     REMOTE.base = Math.max(REMOTE.base || 0, S.savedAt || 0);
     setSync('cloud');
     subscribeRemote();
-    if (isUnsynced()) pushRemote();
+    if (isUnsynced()) pushSafe();
     if (SH && SH.type === 'login') renderSheet(false);
   }).catch(function(err){
     REMOTE.starting = false; REMOTE.ready = false;
@@ -2152,7 +2149,7 @@ function sheetLogin(){
   var h = '';
   if (SESSION && !PASS_RECOVERY){
     h += '<p class="note">Estás ligado como <b>' + esc(SESSION.user.email) + '</b>. A semana, as receitas, os preços e a lista são partilhados com quem também estiver ligado à casa.</p>';
-    h += '<p class="note">Alterações feitas aqui só chegam aos outros depois de carregares em <b>Guardar</b> (no cabeçalho). Para veres o que os outros guardaram, carrega em <b>Atualizar</b>.</p>';
+    h += '<p class="note">As alterações são guardadas na casa automaticamente. Para veres logo o que os outros guardaram, carrega em <b>Atualizar</b> (no cabeçalho).</p>';
     h += '<button type="button" class="btn block" data-act="logout">Sair</button>';
   } else if (PASS_RECOVERY){
     h += '<p class="note">Escolhe a nova palavra-passe (pelo menos 6 caracteres).</p>';
@@ -2279,8 +2276,8 @@ var ACTS = {
   'scan-cand': function(el){ SC.price = el.dataset.v; renderSheet(false); },
   'scan-save': saveScan,
   'login-open': function(){ LOGIN.msg = ''; openSheet({type: 'login'}); },
-  'casa-guardar': function(){ saveCasa(); },
-  'price-save': function(el){ var inp = el.closest('.prow').querySelector('.pinput'); setPrice(inp); },
+  'casa-guardar': function(){ pushSafe(); },
+  'price-save': function(el){ var inp = el.closest('.prow').querySelector('.pinput'); setPrice(inp); toast('Preço guardado.'); },
   'casa-atualizar': function(){ refreshCasa(); },
   'login-pick-1': function(){ LOGIN.email = 'bernardo.n.f.mendes@gmail.com'; LOGIN.msg = ''; refreshLogin(); },
   'login-pick-2': function(){ LOGIN.email = 'paulanevesramalho@gmail.com'; LOGIN.msg = ''; refreshLogin(); },
@@ -2465,6 +2462,7 @@ document.addEventListener('keydown', function(e){
 });
 
 /* ---------- arranque ---------- */
+window.addEventListener('online', function(){ if (SESSION && isUnsynced()) pushSafe(); });
 window.addEventListener('beforeunload', function(e){
   if (SESSION && isUnsynced()){ e.preventDefault(); e.returnValue = ''; }
 });
