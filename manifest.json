@@ -1,24 +1,15 @@
-
 {
-  "name": "A Mãe é que Manda",
-  "short_name": "A Mãe é que Manda",
-  "description": "A nossa aplicação familiar.",
-  "start_url": "/amaeequemanda/",
-  "scope": "/amaeequemanda/",
+  "name": "A Mãe é que Sabe",
+  "short_name": "A Mãe é que Sabe",
+  "description": "Receitas, semana e compras da casa.",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#ffffff",
-  "orientation": "portrait",
+  "background_color": "#FFF6F2",
+  "theme_color": "#FFF6F2",
+  "lang": "pt-PT",
   "icons": [
-    {
-      "src": "./icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png"
-    },
-    {
-      "src": "./icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png"
-    }
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"}
   ]
 }
