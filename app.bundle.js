@@ -1166,22 +1166,26 @@ function setSync(mode, txt){
 function renderSync(){
   var el = $('#sync');
   if (!el) return;
+  var sheetBtn = '<button type="button" class="linkbtn" data-act="login-open">' + (SESSION ? 'Casa e dados' : 'Partilhar com a casa') + '</button>';
+  var note = REMOTE.note ? '<br><span>' + esc(REMOTE.note) + '</span>' : '';
   if (!SB || !SESSION){
-    el.innerHTML = '<button type="button" class="linkbtn" data-act="login-open">Partilhar com a casa</button>' +
-      (REMOTE.note ? '<br>' + esc(REMOTE.note) : '');
+    el.innerHTML = sheetBtn + note;
     return;
   }
-  if (!REMOTE.ready){ el.textContent = REMOTE.note || 'A ligar…'; return; }
-  if (isUnsynced()){
-    el.innerHTML = '<span>Alterações por guardar</span><br><button type="button" class="btn pri sm" data-act="casa-guardar">Guardar</button>';
-    return;
-  }
-  el.textContent = REMOTE.note || 'Guardado na casa';
+  var status;
+  if (!REMOTE.ready) status = '<span>' + esc(REMOTE.note || 'A ligar…') + '</span>';
+  else if (isUnsynced()) status = '<span>Alterações por guardar</span> <button type="button" class="btn pri sm" data-act="casa-guardar">Guardar</button>';
+  else status = '<span>' + esc(REMOTE.note || 'Guardado na casa') + '</span>';
+  el.innerHTML = status + '<br>' + sheetBtn;
 }
 /* botão Guardar: envia o estado deste dispositivo para a casa */
 function saveCasa(){
   if (!SESSION){ openSheet({type: 'login'}); return; }
-  if (!REMOTE.ready){ toast('A ligar à casa. Tenta de novo daqui a pouco.'); return; }
+  if (!REMOTE.ready){
+    toast('Ainda não estou ligado à casa. A tentar de novo…');
+    startSync();
+    return;
+  }
   REMOTE.wantToast = true;
   setSync('', 'A verificar a casa…');
   SB.from('casa').select('state,saved_at').eq('id', 'casa').maybeSingle().then(function(res){
@@ -1198,7 +1202,7 @@ function saveCasa(){
     }
     setSync('', 'A guardar…');
     pushRemote();
-  }).catch(function(){ REMOTE.wantToast = false; setSync('local', 'Sem ligação: guardado neste dispositivo'); toast('Não consegui guardar na casa. Tenta de novo.'); });
+  }).catch(function(err){ REMOTE.wantToast = false; setSync('local', syncErr(err)); toast(syncErr(err)); });
 }
 function pushRemote(){
   if (!REMOTE.ready || !SESSION) return;
@@ -1207,12 +1211,12 @@ function pushRemote(){
   var at = S.savedAt || Date.now();
   var row = {id: 'casa', state: clone(S), saved_at: at, updated_by: SESSION.user.email};
   SB.from('casa').upsert(row).then(function(res){
-    if (res.error){ REMOTE.wantToast = false; setSync('local', 'Sem ligação: guardado neste dispositivo'); toast('Não consegui guardar na casa. Tenta de novo.'); return; }
+    if (res.error){ REMOTE.wantToast = false; setSync('local', syncErr(res.error)); toast(syncErr(res.error)); return; }
     REMOTE.base = Math.max(REMOTE.base || 0, at);
     if (S.savedAt === at) markUnsynced(false);   /* se houve edições entretanto, continuam marcadas */
     setSync('cloud', 'Guardado na casa');
     if (REMOTE.wantToast){ REMOTE.wantToast = false; toast('Guardado na casa.'); }
-  }).catch(function(){ setSync('local', 'Sem ligação: guardado neste dispositivo'); })
+  }).catch(function(err){ setSync('local', syncErr(err)); toast(syncErr(err)); })
   .then(function(){
     REMOTE.busy = false;
     if (REMOTE.dirty){ REMOTE.dirty = false; pushRemote(); }
@@ -1276,8 +1280,7 @@ function startSync(){
     if (SH && SH.type === 'login') renderSheet(false);
   }).catch(function(err){
     REMOTE.starting = false; REMOTE.ready = false;
-    var noAccess = err && (err.code === '42501' || /row-level|permission/i.test(err.message || ''));
-    setSync('local', noAccess ? 'Esta conta não está autorizada nesta casa' : 'Sem ligação: guardado neste dispositivo');
+    setSync('local', syncErr(err));
   });
 }
 function stopSync(){
@@ -1300,6 +1303,16 @@ function initRemote(){
     SESSION = r.data.session || null;
     if (SESSION) startSync(); else setSync('local');
   }, function(){ setSync('local'); });
+}
+/* motivo legível de uma falha de sincronização (para o utilizador perceber o que fazer) */
+function syncErr(err){
+  var m = (err && (err.message || err.details || err.hint)) || '';
+  var code = (err && err.code) || '';
+  if (code === '42501' || /row-level security|permission denied/i.test(m)) return 'Esta conta não está na lista da casa (allowed_emails).';
+  if (code === 'PGRST205' || /relation .* does not exist|could not find the table/i.test(m)) return 'A base de dados ainda não tem as tabelas. Falta correr supabase-schema.sql.';
+  if (/invalid api key|jwt|apikey/i.test(m)) return 'A chave do Supabase em config.js não está correta.';
+  if (/failed to fetch|networkerror|load failed|network/i.test(m)) return 'Sem ligação à internet ou ao Supabase. Guardado neste dispositivo.';
+  return 'Erro do Supabase: ' + (m || 'sem detalhe') + '. Guardado neste dispositivo.';
 }
 /* mensagens de erro do Supabase, em português */
 function authError(err){
