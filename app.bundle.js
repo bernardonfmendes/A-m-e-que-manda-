@@ -2390,6 +2390,13 @@ var SHEETS = {picker: sheetPicker, recipe: sheetRecipe, editor: sheetEditor, new
 /* ---------- faturas ---------- */
 var PDFJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
 var PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+/* limita o tempo de espera: se passar o limite, rejeita (a app mostra a leitura básica) */
+function comLimite(promessa, ms, msg){
+  return new Promise(function(resolve, reject){
+    var t = setTimeout(function(){ reject(new Error(msg)); }, ms);
+    promessa.then(function(v){ clearTimeout(t); resolve(v); }, function(e){ clearTimeout(t); reject(e); });
+  });
+}
 function loadPdfJs(){
   return new Promise(function(resolve, reject){
     if (window.pdfjsLib){ resolve(window.pdfjsLib); return; }
@@ -2424,17 +2431,17 @@ function motivoIA(e){
   if (e.status === 401) return 'a sessão expirou: sai da casa e volta a entrar';
   if (e.status === 403) return 'a conta não está na lista da casa';
   if (e.status === 500) return 'falta a chave GEMINI_API_KEY no Supabase';
-  if (e.status === 502) return 'o Gemini não respondeu: ' + e.message;
+  if (e.status === 502) return e.message;
   return e.message;
 }
 function readFatura(file){
   FAT = {step: 'review', busy: true, store: null, items: [], msg: '', check: null};
   renderSheet(false);
-  loadPdfJs().then(function(lib){
+  comLimite(loadPdfJs(), 20000, 'o leitor de PDF não carregou (verifica a ligação)').then(function(lib){
     return file.arrayBuffer().then(function(buf){ return pdfToText(lib, new Uint8Array(buf)); });
   }).then(function(text){
     var r0 = parseInvoice(text);
-    return lerComIA(text).then(function(ia){
+    return comLimite(lerComIA(text), 25000, 'a IA demorou demasiado a responder').then(function(ia){
       return {r: aplicaIA(r0, ia), origem: 'ia'};
     }, function(e){
       return {r: r0, origem: 'basica', motivo: motivoIA(e)};
