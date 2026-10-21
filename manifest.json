@@ -1,0 +1,12 @@
+
+{
+  "name": "Ama é que manda",
+  "short_name": "Ama é que manda",
+  "description": "A nossa aplicação familiar.",
+  "start_url": "/amaeequemanda/",
+  "scope": "/amaeequemanda/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "orientation": "portrait"
+}
