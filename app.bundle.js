@@ -1121,7 +1121,7 @@ var ZXING_URL = 'https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js';
 var TESS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js';
 var lastFocus = null, toastTimer = null;
 var SB = null, SESSION = null, LOGIN = {email: '', sent: false};
-var REMOTE = {ready: false, busy: false, dirty: false, timer: null, pending: false, ch: null};
+var REMOTE = {ready: false, busy: false, dirty: false, timer: null, pending: false, ch: null, base: 0, note: '', wantToast: false};
 
 function $(s, r){ return (r || document).querySelector(s); }
 function $$(s, r){ return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
@@ -1151,22 +1151,54 @@ function markUnsynced(v){ try { if (v) localStorage.setItem(UNSYNC_KEY, '1'); el
 function backupLocal(){
   try { localStorage.setItem(BACKUP_KEY, JSON.stringify({at: Date.now(), state: S})); } catch (e) {}
 }
+/* cada alteração fica guardada neste dispositivo e marcada como "por guardar";
+   só sobe para a casa quando alguém carrega em Guardar */
 function persist(){
   S.savedAt = Date.now();
   saveLocal();
   markUnsynced(true);
-  scheduleRemote();
+  renderSync();
 }
 function setSync(mode, txt){
+  REMOTE.note = txt || '';
+  renderSync();
+}
+function renderSync(){
   var el = $('#sync');
   if (!el) return;
-  if (mode === 'local' && !txt) el.innerHTML = '<button type="button" class="linkbtn" data-act="login-open">Partilhar com a casa</button>';
-  else el.textContent = txt || (mode === 'cloud' ? 'Guardado na casa' : 'A ligar…');
+  if (!SB || !SESSION){
+    el.innerHTML = '<button type="button" class="linkbtn" data-act="login-open">Partilhar com a casa</button>' +
+      (REMOTE.note ? '<br>' + esc(REMOTE.note) : '');
+    return;
+  }
+  if (!REMOTE.ready){ el.textContent = REMOTE.note || 'A ligar…'; return; }
+  if (isUnsynced()){
+    el.innerHTML = '<span>Alterações por guardar</span><br><button type="button" class="btn pri sm" data-act="casa-guardar">Guardar</button>';
+    return;
+  }
+  el.textContent = REMOTE.note || 'Guardado na casa';
 }
-function scheduleRemote(){
-  if (!REMOTE.ready) return;               /* só grava depois de a casa ter sido lida */
-  clearTimeout(REMOTE.timer);
-  REMOTE.timer = setTimeout(function(){ REMOTE.timer = null; pushRemote(); }, 800);
+/* botão Guardar: envia o estado deste dispositivo para a casa */
+function saveCasa(){
+  if (!SESSION){ openSheet({type: 'login'}); return; }
+  if (!REMOTE.ready){ toast('A ligar à casa. Tenta de novo daqui a pouco.'); return; }
+  REMOTE.wantToast = true;
+  setSync('', 'A verificar a casa…');
+  SB.from('casa').select('state,saved_at').eq('id', 'casa').maybeSingle().then(function(res){
+    if (res.error) throw res.error;
+    var row = res.data;
+    if (row && row.state && (row.saved_at || 0) > (REMOTE.base || 0)){
+      /* a casa tem alterações que este dispositivo ainda não tinha: não as sobrescrever */
+      backupLocal();
+      markUnsynced(false);
+      REMOTE.wantToast = false;
+      applyRemote(row.state, row.saved_at);
+      toast('A casa tinha alterações mais recentes. As tuas ficaram numa cópia de segurança (Casa e dados).');
+      return;
+    }
+    setSync('', 'A guardar…');
+    pushRemote();
+  }).catch(function(){ REMOTE.wantToast = false; setSync('local', 'Sem ligação: guardado neste dispositivo'); toast('Não consegui guardar na casa. Tenta de novo.'); });
 }
 function pushRemote(){
   if (!REMOTE.ready || !SESSION) return;
@@ -1175,9 +1207,11 @@ function pushRemote(){
   var at = S.savedAt || Date.now();
   var row = {id: 'casa', state: clone(S), saved_at: at, updated_by: SESSION.user.email};
   SB.from('casa').upsert(row).then(function(res){
-    if (res.error){ setSync('local', 'Sem ligação: guardado neste dispositivo'); return; }
+    if (res.error){ REMOTE.wantToast = false; setSync('local', 'Sem ligação: guardado neste dispositivo'); toast('Não consegui guardar na casa. Tenta de novo.'); return; }
+    REMOTE.base = Math.max(REMOTE.base || 0, at);
     if (S.savedAt === at) markUnsynced(false);   /* se houve edições entretanto, continuam marcadas */
-    setSync('cloud');
+    setSync('cloud', 'Guardado na casa');
+    if (REMOTE.wantToast){ REMOTE.wantToast = false; toast('Guardado na casa.'); }
   }).catch(function(){ setSync('local', 'Sem ligação: guardado neste dispositivo'); })
   .then(function(){
     REMOTE.busy = false;
@@ -1189,6 +1223,7 @@ function applyRemote(state, savedAt){
   if (el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)){ PENDING_REMOTE = {state: state, savedAt: savedAt}; return; }
   S = normalizeState(clone(state));
   S.savedAt = savedAt;
+  REMOTE.base = savedAt;
   rebuildIngIndex(S);
   saveLocal();
   render();
@@ -1234,6 +1269,7 @@ function startSync(){
   setSync('off', 'A ligar…');
   pullRemote().then(function(){
     REMOTE.ready = true; REMOTE.starting = false;
+    REMOTE.base = Math.max(REMOTE.base || 0, S.savedAt || 0);
     setSync('cloud');
     subscribeRemote();
     if (isUnsynced()) pushRemote();
@@ -2055,7 +2091,9 @@ function sheetLogin(){
     h += '<input class="inp" type="password" autocomplete="new-password" placeholder="Nova palavra-passe" data-l="novaPass" aria-label="Nova palavra-passe" value="">';
     h += '<button type="button" class="btn pri block" data-act="login-nova">Definir palavra-passe</button>';
   } else {
-    h += '<p class="note">Entra com o teu email e palavra-passe. Só os emails autorizados entram na casa.</p>';
+    h += '<p class="note">Entra com o teu email e palavra-passe. Só os emails da casa entram.</p>';
+    h += '<div class="row wrap"><button type="button" class="btn sm" data-act="login-pick-1">Bernardo</button>' +
+         '<button type="button" class="btn sm" data-act="login-pick-2">Paula</button></div>';
     h += '<input id="loginEmail" class="inp" type="email" autocomplete="email" inputmode="email" placeholder="o.teu@email.com" data-l="email" aria-label="Email" value="' + esc(LOGIN.email) + '">';
     h += '<input id="loginPass" class="inp" type="password" autocomplete="current-password" placeholder="Palavra-passe" data-l="pass" aria-label="Palavra-passe" value="">';
     h += '<button type="button" class="btn pri block" data-act="login-send">Entrar</button>';
@@ -2173,6 +2211,9 @@ var ACTS = {
   'scan-cand': function(el){ SC.price = el.dataset.v; renderSheet(false); },
   'scan-save': saveScan,
   'login-open': function(){ LOGIN.msg = ''; openSheet({type: 'login'}); },
+  'casa-guardar': function(){ saveCasa(); },
+  'login-pick-1': function(){ LOGIN.email = 'bernardo.n.f.mendes@gmail.com'; LOGIN.msg = ''; renderSheet(false); },
+  'login-pick-2': function(){ LOGIN.email = 'paulanevesramalho@gmail.com'; LOGIN.msg = ''; renderSheet(false); },
   'login-send': signIn,
   'login-reset': resetPassword,
   'login-nova': setNewPassword,
@@ -2349,6 +2390,9 @@ document.addEventListener('keydown', function(e){
 });
 
 /* ---------- arranque ---------- */
+window.addEventListener('beforeunload', function(e){
+  if (SESSION && isUnsynced()){ e.preventDefault(); e.returnValue = ''; }
+});
 document.addEventListener('focusout', function(){
   setTimeout(function(){
     if (PENDING_REMOTE && !/^(INPUT|SELECT|TEXTAREA)$/.test((document.activeElement || {}).tagName || '')){

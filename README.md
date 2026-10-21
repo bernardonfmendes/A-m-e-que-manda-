@@ -27,7 +27,7 @@ Corre em GitHub Pages e guarda os dados no Supabase. Sem ligação, funciona só
 
 ## Como entrar
 
-- Botão **Partilhar com a casa** (no cabeçalho): email e palavra-passe.
+- Botão **Partilhar com a casa** (no cabeçalho): email e palavra-passe. Há dois botões com os emails da casa, para preencher mais depressa.
 - **Esqueci-me da palavra-passe** envia um link para definir uma nova.
 - Depois de entrar, a semana, as receitas, os preços e a lista são os mesmos para os dois.
 
@@ -38,8 +38,12 @@ Na folha "Casa e dados":
 - **Importar ficheiro** repõe a partir de um ficheiro exportado (e envia para a casa).
 - **Restaurar cópia deste dispositivo** recupera a versão local que foi posta de lado quando a casa tinha uma versão mais recente.
 
-Regra de sincronização: a versão mais recente ganha. Se um dispositivo tiver alterações que ainda não foram enviadas
-e a casa tiver uma versão mais nova, essas alterações ficam numa cópia de segurança local antes de a casa ser carregada.
+## Guardar na casa
+
+- Cada alteração fica guardada neste dispositivo logo, e o cabeçalho mostra **Alterações por guardar**.
+- Para enviar para a casa, carrega em **Guardar**. Antes de enviar, a app verifica se a casa mudou entretanto;
+  se mudou, não sobrescreve: as tuas alterações ficam numa cópia de segurança (Casa e dados) e a versão da casa é carregada.
+- A app avisa antes de fechar a página se houver alterações por guardar.
 
 ## Desenvolvimento
 

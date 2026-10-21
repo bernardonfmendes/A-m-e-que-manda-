@@ -1,5 +1,8 @@
 <title>A Mãe é que Sabe</title>
-<meta name="claude:viewport-fit-sides" content="cover">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#FFF6F2">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600;700&family=Courier+Prime:wght@400;700&family=Nunito:wght@400;600;700;800&display=swap">
 <style>
 /* Layout: um caderno de receitas pousado numa toalha de xadrez. A folha (.shell) leva o cabeçalho, as definições da semana e a vista ativa; as fichas são cartões de papel com bainha cosida a tracejado; os separadores ficam numa tira de pano no fundo. Títulos e etiquetas à mão (Caveat), texto corrido em Nunito, números e fichas de ingredientes em Courier Prime. Os preços são pedaços de fita-cola amarela com o valor escrito por cima; é o único toque forte. */
@@ -326,6 +329,22 @@ a{color:var(--accent);text-underline-offset:3px}
   .stat .k{font-size:16px}
   .erow{grid-template-columns:minmax(0,1fr) 72px 26px 34px}
   .sum,.day{padding-left:16px;padding-right:16px}
+}
+/* telemóvel: menos margem lateral e alvos de toque de pelo menos 44 px */
+@media (max-width:560px){
+  body{padding-left:max(10px, env(safe-area-inset-left, 0px));padding-right:max(10px, env(safe-area-inset-right, 0px));padding-block:10px 112px}
+  .shell{padding:0 12px 18px}
+  .shell::before{margin:0 -12px 10px}
+  .brand-name{font-size:26px;line-height:1.05}
+  .brand-mark{width:40px;height:40px}
+  .sync{max-width:8.5em;font-size:11px}
+}
+@media (pointer:coarse){
+  button, .btn, .x, .tab{min-height:44px}
+  .btn{padding-top:10px;padding-bottom:10px}
+  .linkbtn{min-height:44px;display:inline-flex;align-items:center}
+  .x{min-width:44px}
+  input, select, textarea{min-height:44px}
 }
 @media (prefers-reduced-motion:reduce){
   .sheet-panel{animation:none}
