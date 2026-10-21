@@ -346,6 +346,15 @@ a{color:var(--accent);text-underline-offset:3px}
   .x{min-width:44px}
   input, select, textarea{min-height:44px}
 }
+/* sem sessão: só o ecrã de entrada */
+body.gated .tabs, body.gated .ctx, body.gated #sync{display:none}
+.gate{display:grid;gap:12px;margin-top:8px}
+.gate .h2{margin-top:-4px}
+@media (max-width:560px){
+  .meal-main{flex-wrap:wrap;row-gap:6px}
+  .meal-t{flex:1 1 100%}
+  .meal-main .sticker{margin-left:0}
+}
 @media (prefers-reduced-motion:reduce){
   .sheet-panel{animation:none}
   .btn:active{transform:none}

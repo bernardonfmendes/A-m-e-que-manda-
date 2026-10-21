@@ -1120,7 +1120,7 @@ var SC = null;          /* leitura de etiqueta: {step, busy, ...} */
 var ZXING_URL = 'https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js';
 var TESS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js';
 var lastFocus = null, toastTimer = null;
-var SB = null, SESSION = null, LOGIN = {email: '', sent: false};
+var SB = null, SESSION = null, LOGIN = {email: '', sent: false}, AUTH_READY = false;
 var REMOTE = {ready: false, busy: false, dirty: false, timer: null, pending: false, ch: null, base: 0, note: '', wantToast: false};
 
 function $(s, r){ return (r || document).querySelector(s); }
@@ -1176,7 +1176,23 @@ function renderSync(){
   if (!REMOTE.ready) status = '<span>' + esc(REMOTE.note || 'A ligar…') + '</span>';
   else if (isUnsynced()) status = '<span>Alterações por guardar</span> <button type="button" class="btn pri sm" data-act="casa-guardar">Guardar</button>';
   else status = '<span>' + esc(REMOTE.note || 'Guardado na casa') + '</span>';
-  el.innerHTML = status + '<br>' + sheetBtn;
+  el.innerHTML = status + ' <button type="button" class="linkbtn" data-act="casa-atualizar">Atualizar</button><br>' + sheetBtn;
+}
+/* botão Atualizar: lê a casa e aplica a versão mais recente (só se não houver alterações por guardar) */
+function refreshCasa(){
+  if (!SESSION){ openSheet({type: 'login'}); return; }
+  if (isUnsynced()){ toast('Tens alterações por guardar. Carrega primeiro em Guardar.'); return; }
+  SB.from('casa').select('state,saved_at').eq('id', 'casa').maybeSingle().then(function(res){
+    if (res.error) throw res.error;
+    var row = res.data;
+    if (!row || !row.state){ toast('A casa ainda não tem dados guardados.'); return; }
+    if ((row.saved_at || 0) > (S.savedAt || 0)){
+      applyRemote(row.state, row.saved_at);
+      toast('Atualizado com a versão da casa.');
+    } else {
+      toast('Já tens a versão mais recente.');
+    }
+  }).catch(function(err){ toast(syncErr(err)); });
 }
 /* botão Guardar: envia o estado deste dispositivo para a casa */
 function saveCasa(){
@@ -1262,7 +1278,10 @@ function subscribeRemote(){
       if (!row || !row.state || REMOTE.busy || REMOTE.timer) return;
       if (row.updated_by === (SESSION && SESSION.user.email) && row.saved_at === S.savedAt) return;
       if ((row.saved_at || 0) > (S.savedAt || 0)){
-        if (isUnsynced()) return;           /* há edições locais por enviar: a leitura inicial decide */
+        if (isUnsynced()){                  /* há edições locais por enviar: avisa, não substitui */
+          toast('A casa tem alterações novas. Carrega em Guardar para as receber (as tuas ficam numa cópia de segurança).');
+          return;
+        }
         applyRemote(row.state, row.saved_at);
       }
     }).subscribe();
@@ -1289,20 +1308,24 @@ function stopSync(){
 }
 function initRemote(){
   var cfg = window.BC_CONFIG || {};
-  if (!window.supabase || !cfg.SUPABASE_URL || /COLOCA/.test(cfg.SUPABASE_URL)){ setSync('local'); return; }
+  if (!window.supabase || !cfg.SUPABASE_URL || /COLOCA/.test(cfg.SUPABASE_URL)){ AUTH_READY = true; setSync('local'); render(); return; }
   SB = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, {auth: {persistSession: true, detectSessionInUrl: true}});
   SB.auth.onAuthStateChange(function(ev, s){
-    if (ev === 'PASSWORD_RECOVERY'){ PASS_RECOVERY = true; SESSION = s || null; openSheet({type: 'login'}); return; }
+    if (ev === 'PASSWORD_RECOVERY'){ PASS_RECOVERY = true; SESSION = s || null; AUTH_READY = true; render(); return; }
     var was = SESSION;
     SESSION = s || null;
+    AUTH_READY = true;
     if (SESSION && !was) startSync();
     if (!SESSION){ stopSync(); setSync('local'); }
+    if (!!was !== !!SESSION) render();
     if (SH && SH.type === 'login') renderSheet(false);
   });
   SB.auth.getSession().then(function(r){
     SESSION = r.data.session || null;
+    AUTH_READY = true;
     if (SESSION) startSync(); else setSync('local');
-  }, function(){ setSync('local'); });
+    render();
+  }, function(){ AUTH_READY = true; setSync('local'); render(); });
 }
 /* motivo legível de uma falha de sincronização (para o utilizador perceber o que fazer) */
 function syncErr(err){
@@ -1327,10 +1350,10 @@ function signIn(){
   if (!SB){ toast('A ligação à casa não está configurada.'); return; }
   if (!/^\S+@\S+\.\S+$/.test(em)){ toast('Escreve um email válido.'); return; }
   if (!pw){ toast('Escreve a palavra-passe.'); return; }
-  LOGIN.msg = 'A entrar…'; renderSheet(false);
+  LOGIN.msg = 'A entrar…'; refreshLogin();
   SB.auth.signInWithPassword({email: em, password: pw}).then(function(r){
     LOGIN.pass = ''; LOGIN.msg = '';
-    if (r.error){ LOGIN.msg = authError(r.error); renderSheet(false); return; }
+    if (r.error){ LOGIN.msg = authError(r.error); refreshLogin(); return; }
     toast('Entraste na casa.');
   });
 }
@@ -1340,7 +1363,7 @@ function resetPassword(){
   if (!/^\S+@\S+\.\S+$/.test(em)){ toast('Escreve o email primeiro.'); return; }
   SB.auth.resetPasswordForEmail(em, {redirectTo: location.href.split('#')[0]}).then(function(){
     LOGIN.msg = 'Se o email estiver autorizado, recebes um link para definir a palavra-passe.';
-    renderSheet(false);
+    refreshLogin();
   });
 }
 function setNewPassword(){
@@ -1350,14 +1373,14 @@ function setNewPassword(){
     if (r.error){ toast(authError(r.error)); return; }
     LOGIN.novaPass = ''; PASS_RECOVERY = false;
     toast('Palavra-passe definida.');
-    closeSheet();
+    closeSheet(); render();
   });
 }
 function logout(){
   if (!SB) return;
   SB.auth.signOut().then(function(){
     SESSION = null; stopSync(); setSync('local');
-    renderSheet(false); toast('Saíste da casa. Os dados ficam neste dispositivo.');
+    refreshLogin(); toast('Saíste da casa.');
   });
 }
 /* cópia de segurança: exportar o estado deste dispositivo, importar um ficheiro, restaurar a cópia local */
@@ -1515,8 +1538,8 @@ function viewSemana(){
     h += '<section class="card day"><div class="day-h"><h3>' + d.nome + '</h3><span class="dt">' + dates[i].getDate() + ' ' + MESES[dates[i].getMonth()] + '</span>' +
          '<span class="dc">' + (sm.perDay[d.id] > 0 ? eur(sm.perDay[d.id]) : '') + '</span></div>';
     slots.forEach(function(s){
-      h += mealRow(d, s, 'main');
       if (soupOn(S, s.id)) h += mealRow(d, s, 'sopa');
+      h += mealRow(d, s, 'main');
     });
     h += '</section>';
   });
@@ -1703,7 +1726,7 @@ function priceRows(){
              '<div class="ps">' + fmtQty(i.pack, i.u) + ' · ' + unitPriceLabel(i, p.v) +
              (p.src === 'manual' && !i.custom ? ' · <button type="button" class="linkbtn" data-act="price-reset" data-id="' + esc(i.id) + '">repor</button>' : '') +
              (i.custom ? ' · <button type="button" class="linkbtn" data-act="ing-del" data-id="' + esc(i.id) + '">apagar</button>' : '') + '</div></div>' +
-             '<input class="inp pinput" type="number" step="0.01" min="0" inputmode="decimal" data-id="' + esc(i.id) + '" value="' + p.v.toFixed(2) + '" aria-label="Preço de ' + esc(i.nome) + ' em euros por ' + fmtQty(i.pack, i.u) + '"></div>';
+             '<span class="pedit"><button type="button" class="btn pri sm pguard" data-act="price-save" data-id="' + esc(i.id) + '" hidden>Guardar</button></span><input class="inp pinput" type="number" step="0.01" min="0" inputmode="decimal" data-id="' + esc(i.id) + '" value="' + p.v.toFixed(2) + '" aria-label="Preço de ' + esc(i.nome) + ' em euros por ' + fmtQty(i.pack, i.u) + '"></div>';
     });
     out += '</div></div>';
   });
@@ -1734,7 +1757,38 @@ function syncCtx(){
   if (b && document.activeElement !== b) b.value = S.budget;
   if (c) c.value = S.store;
 }
+/* sem sessão, só se vê o ecrã de entrada (e a recuperação de palavra-passe) */
+function isGated(){ return !SESSION || PASS_RECOVERY; }
+function gateHTML(){
+  var h = '<section class="gate card" aria-label="Entrar na casa"><p class="eyebrow">Casa</p><h1 class="h2">Entrar na casa</h1>';
+  if (!AUTH_READY){
+    h += '<p class="note">A verificar a ligação…</p>';
+  } else if (!SB){
+    h += '<p class="note">A ligação à casa não está configurada. Falta preencher config.js.</p>';
+  } else if (PASS_RECOVERY){
+    h += '<p class="note">Escolhe a nova palavra-passe (pelo menos 6 caracteres).</p>' +
+         '<input class="inp" type="password" autocomplete="new-password" placeholder="Nova palavra-passe" data-l="novaPass" aria-label="Nova palavra-passe" value="">' +
+         '<button type="button" class="btn pri block" data-act="login-nova">Definir palavra-passe</button>';
+  } else {
+    h += '<p class="note">A app só funciona depois de entrares com o teu email e palavra-passe.</p>' +
+         '<div class="row wrap"><button type="button" class="btn sm" data-act="login-pick-1">Bernardo</button>' +
+         '<button type="button" class="btn sm" data-act="login-pick-2">Paula</button></div>' +
+         '<input class="inp" type="email" autocomplete="email" inputmode="email" placeholder="o.teu@email.com" data-l="email" aria-label="Email" value="' + esc(LOGIN.email) + '">' +
+         '<input class="inp" type="password" autocomplete="current-password" placeholder="Palavra-passe" data-l="pass" aria-label="Palavra-passe" value="">' +
+         '<button type="button" class="btn pri block" data-act="login-send">Entrar</button>' +
+         '<button type="button" class="linkbtn" data-act="login-reset">Esqueci-me da palavra-passe</button>';
+    if (LOGIN.msg) h += '<p class="note" role="status">' + esc(LOGIN.msg) + '</p>';
+  }
+  return h + '</section>';
+}
+/* atualiza o ecrã de entrada e a folha de login, conforme o estado */
+function refreshLogin(){
+  if (isGated()) render();
+  if (SH && SH.type === 'login') renderSheet(false);
+}
 function render(){
+  document.body.classList.toggle('gated', isGated());
+  if (isGated()){ $('#view').innerHTML = gateHTML(); return; }
   syncCtx();
   $('#view').innerHTML = VIEWS[VIEW]();
   $$('#tabs .tab').forEach(function(b){
@@ -2098,6 +2152,7 @@ function sheetLogin(){
   var h = '';
   if (SESSION && !PASS_RECOVERY){
     h += '<p class="note">Estás ligado como <b>' + esc(SESSION.user.email) + '</b>. A semana, as receitas, os preços e a lista são partilhados com quem também estiver ligado à casa.</p>';
+    h += '<p class="note">Alterações feitas aqui só chegam aos outros depois de carregares em <b>Guardar</b> (no cabeçalho). Para veres o que os outros guardaram, carrega em <b>Atualizar</b>.</p>';
     h += '<button type="button" class="btn block" data-act="logout">Sair</button>';
   } else if (PASS_RECOVERY){
     h += '<p class="note">Escolhe a nova palavra-passe (pelo menos 6 caracteres).</p>';
@@ -2225,8 +2280,10 @@ var ACTS = {
   'scan-save': saveScan,
   'login-open': function(){ LOGIN.msg = ''; openSheet({type: 'login'}); },
   'casa-guardar': function(){ saveCasa(); },
-  'login-pick-1': function(){ LOGIN.email = 'bernardo.n.f.mendes@gmail.com'; LOGIN.msg = ''; renderSheet(false); },
-  'login-pick-2': function(){ LOGIN.email = 'paulanevesramalho@gmail.com'; LOGIN.msg = ''; renderSheet(false); },
+  'price-save': function(el){ var inp = el.closest('.prow').querySelector('.pinput'); setPrice(inp); },
+  'casa-atualizar': function(){ refreshCasa(); },
+  'login-pick-1': function(){ LOGIN.email = 'bernardo.n.f.mendes@gmail.com'; LOGIN.msg = ''; refreshLogin(); },
+  'login-pick-2': function(){ LOGIN.email = 'paulanevesramalho@gmail.com'; LOGIN.msg = ''; refreshLogin(); },
   'login-send': signIn,
   'login-reset': resetPassword,
   'login-nova': setNewPassword,
@@ -2367,7 +2424,7 @@ document.addEventListener('change', function(e){
   if (el.id === 'inPeople'){ setPeople(parseInt(el.value, 10) || S.people); return; }
   if (el.id === 'inBudget'){ S.budget = Math.max(0, parseFloat(String(el.value).replace(',', '.')) || 0); persist(); render(); return; }
   if (el.id === 'selStore'){ S.store = el.value; persist(); render(); return; }
-  if (el.classList && el.classList.contains('pinput')){ setPrice(el); return; }
+  if (el.classList && el.classList.contains('pinput')){ return; }   /* grava só ao carregar em Guardar */
   if (el.dataset && el.dataset.act === 'bought'){ S.shop.bought[el.dataset.id] = el.checked; persist(); render(); return; }
   if (el.dataset && el.dataset.act === 'ex-bought'){
     S.shop.extras.forEach(function(x){ if (x.id === el.dataset.id) x.bought = el.checked; });
@@ -2377,6 +2434,11 @@ document.addEventListener('change', function(e){
 document.addEventListener('input', function(e){
   var el = e.target;
   if (el.dataset && el.dataset.l){ LOGIN[el.dataset.l] = el.value; return; }
+  if (el.classList && el.classList.contains('pinput')){
+    var g = el.closest('.prow') && el.closest('.prow').querySelector('.pguard');
+    if (g) g.hidden = false;
+    return;
+  }
   if (el.dataset && el.dataset.sc && SH && SH.type === 'scan' && SC){ SC[el.dataset.sc] = el.value; return; }
   if (el.id === 'rSearch'){ UI.rq = el.value; $('#rList').innerHTML = recipeCards(); return; }
   if (el.id === 'pSearch'){ UI.pq = el.value; $('#pList').innerHTML = priceRows(); return; }

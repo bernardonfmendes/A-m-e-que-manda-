@@ -27,9 +27,11 @@ Corre em GitHub Pages e guarda os dados no Supabase. Sem ligação, funciona só
 
 ## Como entrar
 
-- Botão **Partilhar com a casa** (no cabeçalho): email e palavra-passe. Há dois botões com os emails da casa, para preencher mais depressa.
+- A app abre no ecrã de entrada: email e palavra-passe. Há dois botões com os emails da casa, para preencher mais depressa.
+- Sem sessão não se vê nem se altera nada.
 - **Esqueci-me da palavra-passe** envia um link para definir uma nova.
 - Depois de entrar, a semana, as receitas, os preços e a lista são os mesmos para os dois.
+- Para sair: botão **Casa e dados** no cabeçalho → **Sair**.
 
 ## Cópia de segurança
 
