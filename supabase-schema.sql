@@ -3,7 +3,10 @@
 create table if not exists public.allowed_emails (
   email text primary key
 );
-alter table public.allowed_emails enable row level security;  -- sem políticas: ninguém os lê pela API
+alter table public.allowed_emails enable row level security;
+-- cada utilizador só vê a PRÓPRIA linha (necessário para as regras da tabela casa funcionarem)
+create policy "allowed: ler o proprio email" on public.allowed_emails for select to authenticated
+  using (email = (auth.jwt() ->> 'email'));
 
 -- 2) Os dados da casa: uma linha só (id = 'casa').
 create table if not exists public.casa (
