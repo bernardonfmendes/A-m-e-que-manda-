@@ -1760,13 +1760,14 @@ function filteredRecipes(){
   }).sort(function(a, b){ return a.c.perDose - b.c.perDose; });
 }
 function recipeCards(){
-  var rows = filteredRecipes();
+  var rows = filteredRecipes(), rep = idsRepetidos();
   if (!rows.length) return '<div class="empty"><p>Nenhuma receita com estes filtros.</p></div>';
   return rows.map(function(o){
     var r = o.r, st = fitState(o.c.perDose);
     return '<button type="button" class="rcard" data-act="open-recipe" data-id="' + esc(r.id) + '">' +
       '<span class="rc-t"><span class="rc-name">' + esc(r.nome) + '</span>' +
       '<span class="rc-meta">' + tierHtml(tierOf(o.c.perDose)) + ' · ' + catName(r.cat) + ' · ' + r.tempo + ' min · ~' + Math.round(recipeNutri(r).prot) + ' g prot. · ' + eur(o.c.total) + ' para ' + S.people + '</span>' +
+      (rep[r.id] ? '<span class="rc-meta"><b>Repetida</b> · abre a receita para apagar esta cópia</span>' : '') +
       '<span class="rc-fit"><i class="dot ' + st + '"></i>' + (st === 'ok' ? 'Cabe no orçamento por dose' : 'Acima da média do orçamento') + '</span></span>' +
       sticker(o.c.perDose) + '</button>';
   }).join('');
@@ -2076,6 +2077,21 @@ function nutriHtml(r){
     '<p class="note" style="margin-top:6px">' + tt + vt + (fonte ? ' Fontes: ' + esc(fonte) + '.' : '') + '</p></div>';
 }
 
+/* receitas repetidas: o mesmo nome (sem maiúsculas, acentos nem pontuação) */
+var DUP_CONF = null;   /* id da cópia que aguarda a segunda confirmação para apagar */
+function recKey(nome){ return norm(String(nome)).replace(/[^a-z0-9]+/g, ' ').trim(); }
+function receitaComNome(nome, exceptId){
+  var k = recKey(nome), hit = null;
+  S.recipes.forEach(function(r){ if (!hit && r.id !== exceptId && recKey(r.nome) === k) hit = r; });
+  return hit;
+}
+/* ids das cópias repetidas (a primeira com aquele nome não conta) */
+function idsRepetidos(){
+  var vistos = {}, rep = {};
+  S.recipes.forEach(function(r){ var k = recKey(r.nome); if (vistos[k]) rep[r.id] = true; else vistos[k] = r.id; });
+  return rep;
+}
+
 function sheetRecipe(){
   var r = recById(S, SH.id);
   if (!r) return {title: 'Receita', html: '<p>Receita não encontrada.</p>'};
@@ -2116,6 +2132,10 @@ function sheetRecipe(){
   h += '<div><div class="sect" style="margin-top:0">Preparação</div><ol class="steps">' +
        (r.passos && r.passos.length ? r.passos.map(function(p){ return '<li>' + esc(p) + '</li>'; }).join('') : '<li class="muted">Sem passos.</li>') + '</ol></div>';
   h += '<button type="button" class="btn block" data-act="edit-recipe">Editar receita</button>';
+  if (idsRepetidos()[r.id]){
+    h += '<p class="note">Há outra receita com este nome. Esta cópia pode ser apagada.</p>' +
+         '<button type="button" class="btn danger block" data-act="apagar-copia">' + (DUP_CONF === r.id ? 'Toca outra vez para apagar esta cópia' : 'Apagar esta cópia') + '</button>';
+  }
   return {title: r.nome, html: h};
 }
 
@@ -2192,6 +2212,7 @@ function saveEditor(){
     tempo: Math.max(0, Math.round(ED.tempo || 0)), doses: d.doses, ing: d.ing,
     passos: ED.passos.split('\n').map(function(s){ return s.trim(); }).filter(Boolean)
   };
+  if (receitaComNome(nome, rec.id)){ toast('Já existe uma receita com este nome. Muda o nome ou edita a que já existe.'); return; }
   var idx = -1;
   S.recipes.forEach(function(r, i){ if (r.id === rec.id) idx = i; });
   if (idx >= 0) S.recipes[idx] = rec; else S.recipes.push(rec);
@@ -2445,6 +2466,7 @@ function saveAiRecipe(){
   if (!d) return;
   var ing = d.ing.filter(function(x){ return IMAP[x.id] && x.qty > 0; });
   if (ing.length < 2){ toast('A receita não tem ingredientes válidos.'); return; }
+  if (receitaComNome(d.nome, null)){ toast('Já existe uma receita com este nome. Pede outra sugestão.'); return; }
   S.recipes.push({id: 'u-' + Date.now().toString(36), nome: d.nome, cat: d.cat, refeicao: d.refeicao, tempo: d.tempo, doses: d.doses,
                   ing: ing.map(function(x){ return [x.id, x.qty]; }), passos: d.passos});
   persist(); AIR = null; closeSheet(); render(); toast('Receita guardada');
@@ -2788,6 +2810,14 @@ var ACTS = {
   },
   'ai-recipe-save': saveAiRecipe,
   'ai-recipe-discard': function(){ AIR = null; closeSheet(); },
+  'apagar-copia': function(){
+    var id = SH && SH.id;
+    if (!id) return;
+    if (DUP_CONF !== id){ DUP_CONF = id; renderSheet(false); return; }
+    DUP_CONF = null;
+    S.recipes = S.recipes.filter(function(r){ return r.id !== id; });
+    persist(); closeSheet(); render(); toast('Cópia apagada');
+  },
   'rc-cat': function(el){ UI.rc = el.dataset.v; render(); },
   'rc-fit': function(){ UI.rfit = !UI.rfit; render(); },
   'ed-add-row': function(){
